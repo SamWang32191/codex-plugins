@@ -56,17 +56,20 @@ bash -c '
   fi
   sdkman_switch_jdk_current="${SDKMAN_CANDIDATES_DIR}/java/current"
   if [[ -L "$sdkman_switch_jdk_current" ]]; then
-    readlink "$sdkman_switch_jdk_current"
+    printf "SDKMAN Java default state: link-hex:"
+    LC_ALL=C readlink -n "$sdkman_switch_jdk_current" | \
+      LC_ALL=C od -An -v -tx1 | LC_ALL=C tr -d "[:space:]"
+    printf "\n"
   elif [[ -e "$sdkman_switch_jdk_current" ]]; then
     printf "ERROR: current is not a symlink: %s\n" "$sdkman_switch_jdk_current" >&2
     exit 1
   else
-    printf "SDKMAN Java default: absent\n"
+    printf "SDKMAN Java default state: absent\n"
   fi
 '
 ```
 
-若初始化失敗，停止並說明 SDKMAN 尚未安裝或不可用；取得同意前不安裝 SDKMAN。
+將 `SDKMAN Java default state:` 後的完整值逐字保存為 `<previous-default-state>`；值只會是 `link-hex:<raw-readlink-target 的逐 byte 十六進位>` 或 `absent`。編碼避免 shell command substitution 遺失 target 尾端 newline，也讓 state 能安全地作為單一 argv 傳遞。若初始化失敗，停止並說明 SDKMAN 尚未安裝或不可用；取得同意前不安裝 SDKMAN。
 
 **完成條件：**SDKMAN 可用、目前 Java 已觀察、default 已記為完整 symlink target 或 `absent`。
 
@@ -131,7 +134,7 @@ bash <skill-dir>/scripts/run-java.sh <identifier> -- <actual-command>
 
 #### 永久 default，僅限明確要求
 
-使用步驟 2 保存的原始 default，然後設定並以新 shell 驗證：
+使用步驟 2 保存的 `<previous-default-state>`。將 identifier 與 state 分別作為單一 argv 傳入，不得把 state 當作 SDKMAN identifier，也不得用 `eval`。設定前再次確認 default 沒有漂移，然後保存輸出的 `<created-default-state>`：
 
 ```bash
 bash -c '
@@ -139,11 +142,36 @@ bash -c '
   unset SDKMAN_ENV
   export SDKMAN_OLD_PWD="$PWD"
   source "${SDKMAN_DIR:-$HOME/.sdkman}/bin/sdkman-init.sh"
+  sdkman_switch_jdk_current="${SDKMAN_CANDIDATES_DIR}/java/current"
+  sdkman_switch_jdk_link_state() {
+    printf "link-hex:"
+    LC_ALL=C readlink -n "$1" | LC_ALL=C od -An -v -tx1 | \
+      LC_ALL=C tr -d "[:space:]" || return 1
+    printf "\n"
+  }
+  sdkman_switch_jdk_default_state() {
+    if [[ -L "$sdkman_switch_jdk_current" ]]; then
+      sdkman_switch_jdk_link_state "$sdkman_switch_jdk_current"
+    elif [[ -e "$sdkman_switch_jdk_current" ]]; then
+      printf "unsupported\n"
+    else
+      printf "absent\n"
+    fi
+  }
+  sdkman_switch_jdk_before="$(sdkman_switch_jdk_default_state)"
+  if [[ "$sdkman_switch_jdk_before" != "$2" ]]; then
+    printf "Refusing to change a default that drifted.\nExpected: %s\nActual:   %s\n" \
+      "$2" "$sdkman_switch_jdk_before" >&2
+    exit 1
+  fi
   sdk default java "$1"
-  sdkman_switch_jdk_created="${SDKMAN_CANDIDATES_DIR}/java/current"
-  [[ -L "$sdkman_switch_jdk_created" ]]
-  readlink "$sdkman_switch_jdk_created"
-' bash <identifier>
+  sdkman_switch_jdk_created="$(sdkman_switch_jdk_default_state)"
+  if [[ "$sdkman_switch_jdk_created" != link-hex:* ]]; then
+    printf "SDKMAN did not create a Java default symlink.\n" >&2
+    exit 1
+  fi
+  printf "Created default state: %s\n" "$sdkman_switch_jdk_created"
+' bash <identifier> <previous-default-state>
 
 bash -c '
   set -e -o pipefail
@@ -155,9 +183,7 @@ bash -c '
 '
 ```
 
-若原本有 default，使用相同的第一段命令，將參數換成 `<previous-identifier>`。若原本為 `absent`，立即保存設定後 `readlink` 輸出的完整值為 `<created-default-target>`；回復代表移除本次建立的 `java/current` symlink，且只在使用者要求回復時執行。
-
-原本為 `absent` 時，使用以下有防護的具體回復命令：
+只在使用者要求回復時執行以下命令。它先要求目前 state 逐字等於 `<created-default-state>`，避免覆蓋後續變更；原本有 default 時，以 `java` 目錄內的暫存 symlink 原子還原 raw target，原本為 `absent` 時則移除本次建立的 symlink。兩個 state 都必須分別作為單一 argv 傳入：
 
 ```bash
 bash -c '
@@ -165,11 +191,109 @@ bash -c '
   unset SDKMAN_ENV
   export SDKMAN_OLD_PWD="$PWD"
   source "${SDKMAN_DIR:-$HOME/.sdkman}/bin/sdkman-init.sh"
+  sdkman_switch_jdk_java_dir="${SDKMAN_CANDIDATES_DIR}/java"
   sdkman_switch_jdk_current="${SDKMAN_CANDIDATES_DIR}/java/current"
-  [[ -L "$sdkman_switch_jdk_current" ]]
-  [[ "$(readlink "$sdkman_switch_jdk_current")" == "$1" ]]
-  unlink "$sdkman_switch_jdk_current"
-' bash <created-default-target>
+  sdkman_switch_jdk_link_state() {
+    printf "link-hex:"
+    LC_ALL=C readlink -n "$1" | LC_ALL=C od -An -v -tx1 | \
+      LC_ALL=C tr -d "[:space:]" || return 1
+    printf "\n"
+  }
+  sdkman_switch_jdk_default_state() {
+    if [[ -L "$sdkman_switch_jdk_current" ]]; then
+      sdkman_switch_jdk_link_state "$sdkman_switch_jdk_current"
+    elif [[ -e "$sdkman_switch_jdk_current" ]]; then
+      printf "unsupported\n"
+    else
+      printf "absent\n"
+    fi
+  }
+  sdkman_switch_jdk_decode_link_state() {
+    local sdkman_switch_jdk_encoded="${1#link-hex:}"
+    local sdkman_switch_jdk_escaped=""
+    if [[ "$1" != link-hex:* || -z "$sdkman_switch_jdk_encoded" || \
+          $(( ${#sdkman_switch_jdk_encoded} % 2 )) -ne 0 || \
+          ! "$sdkman_switch_jdk_encoded" =~ ^[[:xdigit:]]+$ ]]; then
+      return 1
+    fi
+    while [[ -n "$sdkman_switch_jdk_encoded" ]]; do
+      sdkman_switch_jdk_escaped="${sdkman_switch_jdk_escaped}\\x${sdkman_switch_jdk_encoded:0:2}"
+      sdkman_switch_jdk_encoded="${sdkman_switch_jdk_encoded:2}"
+    done
+    printf -v sdkman_switch_jdk_decoded_target "%b" \
+      "$sdkman_switch_jdk_escaped"
+  }
+  sdkman_switch_jdk_expected="$1"
+  sdkman_switch_jdk_previous="$2"
+  if [[ "$sdkman_switch_jdk_expected" != link-hex:* ]] || \
+     [[ "$sdkman_switch_jdk_previous" != link-hex:* && \
+        "$sdkman_switch_jdk_previous" != absent ]]; then
+    printf "Invalid saved default state.\n" >&2
+    exit 2
+  fi
+  sdkman_switch_jdk_actual="$(sdkman_switch_jdk_default_state)"
+  if [[ "$sdkman_switch_jdk_actual" != "$sdkman_switch_jdk_expected" ]]; then
+    printf "Refusing to overwrite a default that drifted.\nExpected: %s\nActual:   %s\n" \
+      "$sdkman_switch_jdk_expected" "$sdkman_switch_jdk_actual" >&2
+    exit 1
+  fi
+  if [[ "$sdkman_switch_jdk_previous" == absent ]]; then
+    unlink "$sdkman_switch_jdk_current"
+  else
+    if ! sdkman_switch_jdk_decode_link_state "$sdkman_switch_jdk_previous"; then
+      printf "Invalid encoded previous default state.\n" >&2
+      exit 2
+    fi
+    sdkman_switch_jdk_previous_target="$sdkman_switch_jdk_decoded_target"
+    sdkman_switch_jdk_temp_dir="$(
+      mktemp -d "$sdkman_switch_jdk_java_dir/.sdkman-switch-jdk-restore.XXXXXX"
+    )"
+    sdkman_switch_jdk_temp_link="$sdkman_switch_jdk_temp_dir/current"
+    sdkman_switch_jdk_cleanup() {
+      if [[ -L "${sdkman_switch_jdk_temp_link:-}" ]]; then
+        unlink "$sdkman_switch_jdk_temp_link" 2>/dev/null || true
+      fi
+      if [[ -d "${sdkman_switch_jdk_temp_dir:-}" ]]; then
+        rmdir "$sdkman_switch_jdk_temp_dir" 2>/dev/null || true
+      fi
+    }
+    trap sdkman_switch_jdk_cleanup EXIT
+    ln -s -- "$sdkman_switch_jdk_previous_target" "$sdkman_switch_jdk_temp_link"
+    if [[ ! -L "$sdkman_switch_jdk_temp_link" ]] || \
+       [[ "$(sdkman_switch_jdk_link_state "$sdkman_switch_jdk_temp_link")" != \
+          "$sdkman_switch_jdk_previous" ]]; then
+      printf "Could not create the exact rollback symlink.\n" >&2
+      exit 1
+    fi
+    if [[ "$(sdkman_switch_jdk_default_state)" != \
+          "$sdkman_switch_jdk_expected" ]]; then
+      printf "Refusing to overwrite a default that drifted during rollback.\n" >&2
+      exit 1
+    fi
+    if mv -fh "$sdkman_switch_jdk_temp_link" \
+         "$sdkman_switch_jdk_current" 2>/dev/null; then
+      :
+    elif [[ -L "$sdkman_switch_jdk_temp_link" ]] && \
+         mv -Tf "$sdkman_switch_jdk_temp_link" \
+           "$sdkman_switch_jdk_current" 2>/dev/null; then
+      :
+    else
+      printf "Could not atomically restore the Java default.\n" >&2
+      exit 1
+    fi
+    rmdir "$sdkman_switch_jdk_temp_dir"
+    sdkman_switch_jdk_temp_dir=
+    sdkman_switch_jdk_temp_link=
+    trap - EXIT
+  fi
+  sdkman_switch_jdk_actual="$(sdkman_switch_jdk_default_state)"
+  if [[ "$sdkman_switch_jdk_actual" != "$sdkman_switch_jdk_previous" ]]; then
+    printf "Java default rollback verification failed.\nExpected: %s\nActual:   %s\n" \
+      "$sdkman_switch_jdk_previous" "$sdkman_switch_jdk_actual" >&2
+    exit 1
+  fi
+  printf "Restored default state: %s\n" "$sdkman_switch_jdk_actual"
+' bash <created-default-state> <previous-default-state>
 ```
 
 #### 專案或完整環境

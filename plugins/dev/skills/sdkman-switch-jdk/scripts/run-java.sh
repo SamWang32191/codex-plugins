@@ -49,9 +49,18 @@ sdkman_switch_jdk_run_java_dir="${SDKMAN_CANDIDATES_DIR:?SDKMAN_CANDIDATES_DIR i
 sdkman_switch_jdk_run_current="$sdkman_switch_jdk_run_java_dir/current"
 sdkman_switch_jdk_run_target="$sdkman_switch_jdk_run_java_dir/$sdkman_switch_jdk_run_identifier"
 
+sdkman_switch_jdk_run_link_state() {
+  local link="$1"
+
+  printf 'link-hex:'
+  LC_ALL=C readlink -n "$link" | LC_ALL=C od -An -v -tx1 | \
+    LC_ALL=C tr -d '[:space:]' || return 1
+  printf '\n'
+}
+
 sdkman_switch_jdk_run_default_state() {
   if [[ -L "$sdkman_switch_jdk_run_current" ]]; then
-    printf 'link:%s\n' "$(readlink "$sdkman_switch_jdk_run_current")"
+    sdkman_switch_jdk_run_link_state "$sdkman_switch_jdk_run_current"
   elif [[ -e "$sdkman_switch_jdk_run_current" ]]; then
     printf 'unsupported\n'
   else
@@ -59,8 +68,25 @@ sdkman_switch_jdk_run_default_state() {
   fi
 }
 
+sdkman_switch_jdk_run_decode_link_state() {
+  local encoded="${1#link-hex:}"
+  local escaped=''
+
+  if [[ "$1" != link-hex:* || -z "$encoded" || \
+        $(( ${#encoded} % 2 )) -ne 0 || \
+        ! "$encoded" =~ ^[[:xdigit:]]+$ ]]; then
+    return 1
+  fi
+  while [[ -n "$encoded" ]]; do
+    escaped="${escaped}\\x${encoded:0:2}"
+    encoded="${encoded:2}"
+  done
+  printf -v sdkman_switch_jdk_run_decoded_target '%b' "$escaped"
+}
+
 sdkman_switch_jdk_run_replace_default_link() {
   local target="$1"
+  local expected_state="$2"
   local cleanup_status=0
   local move_status
   local temp_dir
@@ -69,11 +95,12 @@ sdkman_switch_jdk_run_replace_default_link() {
   temp_dir="$(mktemp -d "$sdkman_switch_jdk_run_java_dir/.sdkman-switch-jdk-restore.XXXXXX")" || return 1
   temp_link="$temp_dir/current"
 
-  if ! ln -s "$target" "$temp_link"; then
+  if ! ln -s -- "$target" "$temp_link"; then
     rmdir "$temp_dir" 2>/dev/null || true
     return 1
   fi
-  if [[ ! -L "$temp_link" || "$(readlink "$temp_link")" != "$target" ]]; then
+  if [[ ! -L "$temp_link" ]] || \
+     [[ "$(sdkman_switch_jdk_run_link_state "$temp_link")" != "$expected_state" ]]; then
     unlink "$temp_link" 2>/dev/null || true
     rmdir "$temp_dir" 2>/dev/null || true
     return 1
@@ -114,10 +141,11 @@ sdkman_switch_jdk_run_restore_default() {
     return 1
   fi
 
-  if [[ "$expected" == link:* ]]; then
-    previous_target="${expected#link:}"
+  if [[ "$expected" == link-hex:* ]] && \
+     sdkman_switch_jdk_run_decode_link_state "$expected"; then
+    previous_target="$sdkman_switch_jdk_run_decoded_target"
     set +e
-    sdkman_switch_jdk_run_replace_default_link "$previous_target"
+    sdkman_switch_jdk_run_replace_default_link "$previous_target" "$expected"
     restore_status=$?
     set -e
   elif [[ "$expected" == "absent" && -L "$sdkman_switch_jdk_run_current" ]]; then
@@ -151,7 +179,7 @@ if [[ "$sdkman_switch_jdk_run_default_before" == "unsupported" ]]; then
 fi
 
 sdkman_switch_jdk_run_use_status=0
-if [[ "$sdkman_switch_jdk_run_default_before" == link:* ]]; then
+if [[ "$sdkman_switch_jdk_run_default_before" == link-hex:* ]]; then
   set +e
   sdk use java "$sdkman_switch_jdk_run_identifier"
   sdkman_switch_jdk_run_use_status=$?
