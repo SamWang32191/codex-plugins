@@ -6,8 +6,8 @@
     "name": "Sam Wang",
     "url": "https://github.com/SamWang32191"
   },
-  "homepage": "https://github.com/SamWang32191/skills",
-  "repository": "https://github.com/SamWang32191/skills",
+  "homepage": "https://github.com/SamWang32191/codex-plugins",
+  "repository": "https://github.com/SamWang32191/codex-plugins",
   "keywords": [
     "codex",
     "skills",
@@ -27,7 +27,7 @@
       "Interactive",
       "Write"
     ],
-    "websiteURL": "https://github.com/SamWang32191/skills",
+    "websiteURL": "https://github.com/SamWang32191/codex-plugins",
     "logo": "./assets/logo.png",
     "defaultPrompt": [
       "Switch this project to the required JDK with SDKMAN."
