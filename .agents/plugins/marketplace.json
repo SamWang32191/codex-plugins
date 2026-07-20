@@ -6,7 +6,6 @@
   "plugins": [
     {
       "name": "cmd",
-      "displayName": "CMD_DP",
       "source": {
         "source": "local",
         "path": "./plugins/cmd"
