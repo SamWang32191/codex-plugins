@@ -1,0 +1,5 @@
+interface:
+  display_name: "Create Branch"
+  short_description: "Create a git branch"
+policy:
+  allow_implicit_invocation: false

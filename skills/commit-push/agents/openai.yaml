@@ -1,5 +1,5 @@
 interface:
-  display_name: "Commit & Push"
+  display_name: "Commit Push"
   short_description: "Commit and push"
 policy:
   allow_implicit_invocation: false
