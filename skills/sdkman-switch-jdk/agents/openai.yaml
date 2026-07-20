@@ -1,3 +1,4 @@
 interface:
-  display_name: "Sdkman Switch Jdk"
-  short_description: "Sdkman switch jdk"
+  display_name: "SDKMAN Switch JDK"
+  short_description: "Safely switch SDKMAN-managed Java versions"
+  default_prompt: "Use $sdkman-switch-jdk to select and safely switch to the JDK required by this project."
