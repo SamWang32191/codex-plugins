@@ -1,0 +1,36 @@
+{
+  "name": "cmd",
+  "version": "0.1.1",
+  "description": "Prompt-based wrapper commands for explicit agent workflows in Codex.",
+  "author": {
+    "name": "Sam Wang",
+    "url": "https://github.com/SamWang32191"
+  },
+  "homepage": "https://github.com/SamWang32191/skills",
+  "repository": "https://github.com/SamWang32191/skills",
+  "keywords": [
+    "codex",
+    "skills",
+    "wrapper",
+    "commands",
+    "prompts",
+    "workflows"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "CMD",
+    "shortDescription": "Prompt wrappers for explicit agent commands",
+    "longDescription": "Collect prompt-based wrappers that expose repeatable agent workflows as explicit commands, including Git operations and future command-style skills.",
+    "developerName": "Sam Wang",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/SamWang32191/skills",
+    "defaultPrompt": [
+      "Create a commit from the current changes.",
+      "Push this branch and open a pull request."
+    ]
+  }
+}

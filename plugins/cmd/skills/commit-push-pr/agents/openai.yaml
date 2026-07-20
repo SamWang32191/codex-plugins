@@ -1,0 +1,5 @@
+interface:
+  display_name: "Commit Push PR"
+  short_description: "Commit , push and PR"
+policy:
+  allow_implicit_invocation: false
