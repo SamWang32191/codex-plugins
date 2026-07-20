@@ -1,7 +1,6 @@
 ---
 name: commit
 description: Create a git commit
-disable-model-invocation: true
 ---
 
 ## Context

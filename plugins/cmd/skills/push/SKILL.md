@@ -1,7 +1,6 @@
 ---
-name: pr
+name: push
 description:  Push current branch to origin
-disable-model-invocation: true
 ---
 
 

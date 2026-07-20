@@ -1,0 +1,36 @@
+{
+  "name": "dev",
+  "version": "0.1.2",
+  "description": "Software development utilities for Codex.",
+  "author": {
+    "name": "Sam Wang",
+    "url": "https://github.com/SamWang32191"
+  },
+  "homepage": "https://github.com/SamWang32191/codex-plugins",
+  "repository": "https://github.com/SamWang32191/codex-plugins",
+  "keywords": [
+    "codex",
+    "skills",
+    "development",
+    "sdkman",
+    "jdk",
+    "java"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Dev",
+    "shortDescription": "Software development utilities for Codex",
+    "longDescription": "Use focused skills for development environment setup and future programming workflows.",
+    "developerName": "Sam Wang",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/SamWang32191/codex-plugins",
+    "logo": "./assets/logo.png",
+    "defaultPrompt": [
+      "Switch this project to the required JDK with SDKMAN."
+    ]
+  }
+}

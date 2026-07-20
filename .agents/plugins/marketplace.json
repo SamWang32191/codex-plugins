@@ -1,0 +1,33 @@
+{
+  "name": "samwang",
+  "interface": {
+    "displayName": "Sam Wang Skills"
+  },
+  "plugins": [
+    {
+      "name": "cmd",
+      "displayName": "CMD_DP",
+      "source": {
+        "source": "local",
+        "path": "./plugins/cmd"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    },
+    {
+      "name": "dev",
+      "source": {
+        "source": "local",
+        "path": "./plugins/dev"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

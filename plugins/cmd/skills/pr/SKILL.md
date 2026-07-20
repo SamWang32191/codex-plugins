@@ -1,7 +1,6 @@
 ---
 name: pr
 description:  Open a PR for the current branch
-disable-model-invocation: true
 ---
 
 ## Context

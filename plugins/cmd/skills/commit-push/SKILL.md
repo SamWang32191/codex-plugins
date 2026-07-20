@@ -1,7 +1,6 @@
 ---
 name: commit-push
 description: Commit and push
-disable-model-invocation: true
 ---
 
 ## Context

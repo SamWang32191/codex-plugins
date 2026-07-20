@@ -1,7 +1,6 @@
 ---
 name: create-branch
 description:  Create a git branch
-disable-model-invocation: true
 ---
 
 ## Context
