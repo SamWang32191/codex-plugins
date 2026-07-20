@@ -1,5 +1,0 @@
-interface:
-  display_name: "Push"
-  short_description: "Push current branch to origin"
-policy:
-  allow_implicit_invocation: false
