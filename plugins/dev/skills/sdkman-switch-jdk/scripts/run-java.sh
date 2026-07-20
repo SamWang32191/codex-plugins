@@ -25,6 +25,16 @@ if [[ "$sdkman_switch_jdk_run_identifier" == "current" ]]; then
 fi
 shift 2
 
+sdkman_switch_jdk_run_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+sdkman_switch_jdk_run_state_helper="$sdkman_switch_jdk_run_script_dir/sdkman-current-state.sh"
+if [[ ! -r "$sdkman_switch_jdk_run_state_helper" ]]; then
+  printf 'SDKMAN state helper is not readable: %s\n' \
+    "$sdkman_switch_jdk_run_state_helper" >&2
+  exit 1
+fi
+# shellcheck source=sdkman-current-state.sh
+source "$sdkman_switch_jdk_run_state_helper"
+
 sdkman_switch_jdk_run_root="${SDKMAN_DIR:-${HOME:?HOME is not set}/.sdkman}"
 sdkman_switch_jdk_run_init="$sdkman_switch_jdk_run_root/bin/sdkman-init.sh"
 if [[ ! -r "$sdkman_switch_jdk_run_init" ]]; then
@@ -49,129 +59,18 @@ sdkman_switch_jdk_run_java_dir="${SDKMAN_CANDIDATES_DIR:?SDKMAN_CANDIDATES_DIR i
 sdkman_switch_jdk_run_current="$sdkman_switch_jdk_run_java_dir/current"
 sdkman_switch_jdk_run_target="$sdkman_switch_jdk_run_java_dir/$sdkman_switch_jdk_run_identifier"
 
-sdkman_switch_jdk_run_link_state() {
-  local link="$1"
-
-  printf 'link-hex:'
-  LC_ALL=C readlink -n "$link" | LC_ALL=C od -An -v -tx1 | \
-    LC_ALL=C tr -d '[:space:]' || return 1
-  printf '\n'
-}
-
-sdkman_switch_jdk_run_default_state() {
-  if [[ -L "$sdkman_switch_jdk_run_current" ]]; then
-    sdkman_switch_jdk_run_link_state "$sdkman_switch_jdk_run_current"
-  elif [[ -e "$sdkman_switch_jdk_run_current" ]]; then
-    printf 'unsupported\n'
-  else
-    printf 'absent\n'
-  fi
-}
-
-sdkman_switch_jdk_run_decode_link_state() {
-  local encoded="${1#link-hex:}"
-  local escaped=''
-
-  if [[ "$1" != link-hex:* || -z "$encoded" || \
-        $(( ${#encoded} % 2 )) -ne 0 || \
-        ! "$encoded" =~ ^[[:xdigit:]]+$ ]]; then
-    return 1
-  fi
-  while [[ -n "$encoded" ]]; do
-    escaped="${escaped}\\x${encoded:0:2}"
-    encoded="${encoded:2}"
-  done
-  printf -v sdkman_switch_jdk_run_decoded_target '%b' "$escaped"
-}
-
-sdkman_switch_jdk_run_replace_default_link() {
-  local target="$1"
-  local expected_state="$2"
-  local cleanup_status=0
-  local move_status
-  local temp_dir
-  local temp_link
-
-  temp_dir="$(mktemp -d "$sdkman_switch_jdk_run_java_dir/.sdkman-switch-jdk-restore.XXXXXX")" || return 1
-  temp_link="$temp_dir/current"
-
-  if ! ln -s -- "$target" "$temp_link"; then
-    rmdir "$temp_dir" 2>/dev/null || true
-    return 1
-  fi
-  if [[ ! -L "$temp_link" ]] || \
-     [[ "$(sdkman_switch_jdk_run_link_state "$temp_link")" != "$expected_state" ]]; then
-    unlink "$temp_link" 2>/dev/null || true
-    rmdir "$temp_dir" 2>/dev/null || true
-    return 1
-  fi
-
-  # BSD mv uses -h and GNU mv uses -T to replace a symlink itself rather than
-  # following a symlink to a directory. Both paths use rename on this filesystem.
-  mv -fh "$temp_link" "$sdkman_switch_jdk_run_current" 2>/dev/null
-  move_status=$?
-  if (( move_status != 0 )) && [[ -L "$temp_link" ]]; then
-    mv -Tf "$temp_link" "$sdkman_switch_jdk_run_current" 2>/dev/null
-    move_status=$?
-  fi
-
-  if [[ -L "$temp_link" ]]; then
-    unlink "$temp_link" || cleanup_status=$?
-  fi
-  rmdir "$temp_dir" || cleanup_status=$?
-
-  if (( move_status != 0 )); then
-    return "$move_status"
-  fi
-  return "$cleanup_status"
-}
-
-sdkman_switch_jdk_run_restore_default() {
-  local expected="$1"
-  local previous_target
-  local restore_status
-  local restored
-
-  restored="$(sdkman_switch_jdk_run_default_state)"
-  if [[ "$restored" == "$expected" ]]; then
-    return 0
-  fi
-
-  if [[ "$restored" == "unsupported" ]]; then
-    return 1
-  fi
-
-  if [[ "$expected" == link-hex:* ]] && \
-     sdkman_switch_jdk_run_decode_link_state "$expected"; then
-    previous_target="$sdkman_switch_jdk_run_decoded_target"
-    set +e
-    sdkman_switch_jdk_run_replace_default_link "$previous_target" "$expected"
-    restore_status=$?
-    set -e
-  elif [[ "$expected" == "absent" && -L "$sdkman_switch_jdk_run_current" ]]; then
-    set +e
-    unlink "$sdkman_switch_jdk_run_current"
-    restore_status=$?
-    set -e
-  else
-    restore_status=1
-  fi
-
-  restored="$(sdkman_switch_jdk_run_default_state)"
-  if (( restore_status != 0 )) || [[ "$restored" != "$expected" ]]; then
-    printf 'Default restoration command exited with status %d.\n' \
-      "$restore_status" >&2
-    return 1
-  fi
-}
-
 if [[ ! -x "$sdkman_switch_jdk_run_target/bin/java" ]]; then
   printf 'Java is not installed or is incomplete: %s\n' \
     "$sdkman_switch_jdk_run_identifier" >&2
   exit 1
 fi
 
-sdkman_switch_jdk_run_default_before="$(sdkman_switch_jdk_run_default_state)"
+if ! sdkman_switch_jdk_acquire_lock run-java; then
+  exit 1
+fi
+sdkman_switch_jdk_install_cleanup_traps
+
+sdkman_switch_jdk_run_default_before="$(sdkman_switch_jdk_default_state "$sdkman_switch_jdk_run_current")"
 if [[ "$sdkman_switch_jdk_run_default_before" == "unsupported" ]]; then
   printf 'Refusing to continue: SDKMAN Java current is not a symlink: %s\n' \
     "$sdkman_switch_jdk_run_current" >&2
@@ -179,7 +78,9 @@ if [[ "$sdkman_switch_jdk_run_default_before" == "unsupported" ]]; then
 fi
 
 sdkman_switch_jdk_run_use_status=0
+sdkman_switch_jdk_run_owned_state=''
 if [[ "$sdkman_switch_jdk_run_default_before" == link-hex:* ]]; then
+  sdkman_switch_jdk_run_owned_state="$(sdkman_switch_jdk_target_state "$sdkman_switch_jdk_run_identifier")"
   set +e
   sdk use java "$sdkman_switch_jdk_run_identifier"
   sdkman_switch_jdk_run_use_status=$?
@@ -188,24 +89,37 @@ else
   :
 fi
 
-sdkman_switch_jdk_run_default_after="$(sdkman_switch_jdk_run_default_state)"
+sdkman_switch_jdk_run_default_after="$(sdkman_switch_jdk_default_state "$sdkman_switch_jdk_run_current")"
 sdkman_switch_jdk_run_default_changed=0
 if [[ "$sdkman_switch_jdk_run_default_after" != "$sdkman_switch_jdk_run_default_before" ]]; then
   sdkman_switch_jdk_run_default_changed=1
-  if ! sdkman_switch_jdk_run_restore_default "$sdkman_switch_jdk_run_default_before"; then
+  if ! sdkman_switch_jdk_restore_default \
+      "$sdkman_switch_jdk_run_current" \
+      "$sdkman_switch_jdk_run_default_before" \
+      "$sdkman_switch_jdk_run_owned_state"; then
     printf 'SDKMAN changed the Java default unexpectedly and automatic restoration failed.\n' >&2
     exit 1
   fi
 fi
 
 if (( sdkman_switch_jdk_run_use_status != 0 )); then
+  if ! sdkman_switch_jdk_release_lock; then
+    exit 1
+  fi
   printf 'SDKMAN failed to activate Java %s (status %d); the command was not run.\n' \
     "$sdkman_switch_jdk_run_identifier" "$sdkman_switch_jdk_run_use_status" >&2
   exit "$sdkman_switch_jdk_run_use_status"
 fi
 
 if (( sdkman_switch_jdk_run_default_changed != 0 )); then
+  if ! sdkman_switch_jdk_release_lock; then
+    exit 1
+  fi
   printf 'SDKMAN changed the Java default unexpectedly; it was restored and the command was not run.\n' >&2
+  exit 1
+fi
+
+if ! sdkman_switch_jdk_release_lock; then
   exit 1
 fi
 

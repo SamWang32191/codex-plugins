@@ -38,24 +38,22 @@
 
 只有在使用者明確要求 `.sdkmanrc` 的每個 candidate 時，才使用 `sdk env install`。先通過 `SKILL.md` 步驟 1 的重複 `java=` gate；有衝突時不得進入本分支。
 
-先記錄每個 candidate 的 `current` symlink。SDKMAN 會在啟用 candidate 時為缺少 `current` 的 candidate 建立第一個 default；若發現這種情況，先逐項說明並取得建立 default 的明確授權。未取得授權時，改走 candidate-specific 流程或停止完整環境分支。
+必須從包含 `.sdkmanrc` 的目錄執行專用 runner。不要自行 source SDKMAN 後直接執行 `sdk env install`，因為該 inline 流程無法在 payload 前逐 candidate 驗證與還原 default。
 
-取得所需授權後，將安裝、啟用、驗證與實際命令放在同一 shell：
+runner 會先解析 `.sdkmanrc`、在共用跨程序 lock 內記錄每個 candidate 的 raw `current` symlink，再執行 `sdk env install`。未獲准的變更只有在 current 仍精確等於該 candidate 的 `.sdkmanrc` version 時才會原子還原；若有第三方漂移、比較失敗、還原失敗或 lock ownership 改變，runner 會保留較新的狀態並禁止 payload。
+
+SDKMAN 可能為原本沒有 `current` 的 candidate 建立第一個 default。逐項說明這些 candidate，並只在使用者明確同意保留該 candidate 的 `.sdkmanrc` version 時加入對應授權：
 
 ```bash
-bash -c '
-  set -e -o pipefail
-  unset SDKMAN_ENV
-  export SDKMAN_OLD_PWD="$PWD"
-  source "${SDKMAN_DIR:-$HOME/.sdkman}/bin/sdkman-init.sh"
-  sdk env install
-  java -version 2>&1
-  command -v java
-  (( $# > 0 )) || { printf "No command supplied.\n" >&2; exit 2; }
-  exec "$@"
-' bash <actual-command> [args...]
+bash <skill-dir>/scripts/run-sdkman-env.sh \
+  [--allow-default <candidate>]... \
+  -- <actual-command> [args...]
 ```
+
+`--allow-default` 只適用於執行前為 `absent`、且存在於 `.sdkmanrc` 的 candidate；它只允許保留 `.sdkmanrc` 指定的 exact raw version target。它不允許改寫既有 default，也不接受重複或未列於 `.sdkmanrc` 的 candidate。沒有任何建立 default 的授權時，省略所有 `--allow-default`，runner 會還原每一個新建的 default。
 
 需要 compound command 時，將 `bash -lc 'mvn test && mvn package'` 當成 `<actual-command> [args...]` 傳入；不要把命令文字插入 `bash -c` 程式本文。
 
-**完成條件：**回報 SDKMAN 安裝或切換的每個 candidate、實際命令成功，且所有未獲准變更的 default symlink 與執行前相同。
+runner 只在所有 candidate 的比較、還原、最終驗證與 lock release 都成功後才以 `exec` 執行 payload。SDKMAN 失敗且安全 reconciliation 成功時，保留 SDKMAN 的原始非零 status；CLI 或 `.sdkmanrc` 格式錯誤回傳 `2`，其他安全拒絕回傳 `1`。
+
+**完成條件：**回報 SDKMAN 安裝或切換的每個 candidate、明確授權的新 default、實際命令結果，且所有未獲准變更的 default symlink 與執行前逐 byte 相同。

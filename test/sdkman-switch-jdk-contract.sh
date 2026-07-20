@@ -16,6 +16,7 @@ fi
 scripts_dir="$(cd "$scripts_dir" && pwd)"
 install_script="$scripts_dir/install-java.sh"
 run_script="$scripts_dir/run-java.sh"
+full_env_script="$scripts_dir/run-sdkman-env.sh"
 if [[ ! -r "$install_script" || ! -r "$run_script" ]]; then
   printf 'Missing SDKMAN switch scripts in: %s\n' "$scripts_dir" >&2
   exit 1
@@ -23,6 +24,7 @@ fi
 
 original_path="$PATH"
 real_mv="$(command -v mv)"
+real_ln="$(command -v ln)"
 scenario_filter="${1:-}"
 if [[ $# -gt 1 ]]; then
   printf 'Usage: %s [scenario-name]\n' "${0##*/}" >&2
@@ -38,10 +40,42 @@ fake_bin=''
 shadow_bin=''
 last_status=0
 scenario_count=0
+background_pids=''
+live_lock_fixture_dir=''
+live_lock_owner_pid=''
+
+register_background_pid() {
+  background_pids="${background_pids}${background_pids:+ }$1"
+}
+
+stop_background_processes() {
+  local background_pid
+
+  for background_pid in $background_pids; do
+    if kill -0 "$background_pid" 2>/dev/null; then
+      kill "$background_pid" 2>/dev/null || true
+    fi
+  done
+  for background_pid in $background_pids; do
+    wait "$background_pid" 2>/dev/null || true
+  done
+  background_pids=''
+}
+
+remove_lock_fixture_dir() {
+  local lock_dir="$1"
+
+  rm -f "$lock_dir/pid" "$lock_dir/euid" "$lock_dir/token" "$lock_dir/label"
+  rmdir "$lock_dir" 2>/dev/null || true
+}
 
 cleanup() {
   local cleanup_status="$?"
   trap - EXIT HUP INT TERM
+  stop_background_processes
+  if [[ -n "$live_lock_fixture_dir" ]]; then
+    remove_lock_fixture_dir "$live_lock_fixture_dir"
+  fi
   if [[ -n "$root_tmp" && -d "$root_tmp" ]]; then
     find "$root_tmp" -depth -delete
   fi
@@ -54,6 +88,18 @@ trap 'exit 143' TERM
 
 fail() {
   printf 'FAIL [%s]: %s\n' "${case_name:-setup}" "$*" >&2
+  if [[ -n "$case_dir" && -s "$case_dir/stderr" ]]; then
+    printf 'captured script stderr:\n' >&2
+    sed -n '1,20p' "$case_dir/stderr" >&2
+  fi
+  if [[ -s "${FAKE_THIRD_WRITER_LOG:-}" ]]; then
+    printf 'captured third-writer evidence:\n' >&2
+    sed -n '1,20p' "$FAKE_THIRD_WRITER_LOG" >&2
+  fi
+  if [[ -s "${FAKE_PRE_CAS_WRITER_LOG:-}" ]]; then
+    printf 'captured pre-CAS writer evidence:\n' >&2
+    sed -n '1,20p' "$FAKE_PRE_CAS_WRITER_LOG" >&2
+  fi
   if [[ -n "$case_dir" ]]; then
     printf 'failed case directory (removed on exit): %s\n' "$case_dir" >&2
   fi
@@ -144,6 +190,34 @@ default_state() {
   fi
 }
 
+candidate_current_path() {
+  local candidate="$1"
+
+  printf '%s/%s/current\n' "$SDKMAN_CANDIDATES_DIR" "$candidate"
+}
+
+candidate_default_state() {
+  local candidate="$1"
+  local current
+
+  current="$(candidate_current_path "$candidate")"
+  if [[ -L "$current" ]]; then
+    printf 'link:%s\n' "$(readlink "$current")"
+  elif [[ -e "$current" ]]; then
+    printf 'unsupported\n'
+  else
+    printf 'absent\n'
+  fi
+}
+
+assert_candidate_default_state() {
+  local candidate="$1"
+  local expected="$2"
+  local message="$3"
+
+  assert_eq "$expected" "$(candidate_default_state "$candidate")" "$message"
+}
+
 assert_default_state() {
   local expected="$1"
   local message="$2"
@@ -176,6 +250,21 @@ create_incomplete_candidate() {
   mkdir -p "$candidate/bin"
 }
 
+write_sdkmanrc() {
+  : > "$case_dir/.sdkmanrc"
+  while [[ $# -gt 0 ]]; do
+    printf '%s\n' "$1" >> "$case_dir/.sdkmanrc"
+    shift
+  done
+}
+
+set_full_env_operation_raw_target() {
+  local candidate="$1"
+  local raw_target="$2"
+
+  printf '%s %s\n' "$candidate" "$raw_target" >> "$FAKE_SDK_ENV_OPERATION_FILE"
+}
+
 write_fake_init() {
   local init_file="$SDKMAN_DIR/bin/sdkman-init.sh"
   {
@@ -201,13 +290,66 @@ write_fake_init() {
     printf '%s\n' '  } > "$fake_candidate/bin/java"'
     printf '%s\n' '  chmod +x "$fake_candidate/bin/java"'
     printf '%s\n' '}'
+    printf '%s\n' 'fake_sdk_set_candidate_current() {'
+    printf '%s\n' '  local fake_candidate="$1"'
+    printf '%s\n' '  local fake_target="$2"'
+    printf '%s\n' '  local fake_current="${SDKMAN_CANDIDATES_DIR}/${fake_candidate}/current"'
+    printf '%s\n' '  mkdir -p "${SDKMAN_CANDIDATES_DIR}/${fake_candidate}"'
+    printf '%s\n' '  if [[ -L "$fake_current" || -e "$fake_current" ]]; then unlink "$fake_current"; fi'
+    printf '%s\n' '  ln -s -- "$fake_target" "$fake_current"'
+    printf '%s\n' '}'
     printf '%s\n' 'fake_sdk_set_current() {'
-    printf '%s\n' '  local fake_target="$1"'
-    printf '%s\n' '  if [[ -L "$FAKE_CURRENT_PATH" || -e "$FAKE_CURRENT_PATH" ]]; then unlink "$FAKE_CURRENT_PATH"; fi'
-    printf '%s\n' '  ln -s -- "$fake_target" "$FAKE_CURRENT_PATH"'
+    printf '%s\n' '  fake_sdk_set_candidate_current java "$1"'
+    printf '%s\n' '}'
+    printf '%s\n' 'fake_sdk_env_operation_target() {'
+    printf '%s\n' '  local fake_candidate="$1"'
+    printf '%s\n' '  local fake_identifier="$2"'
+    printf '%s\n' '  local fake_config_candidate'
+    printf '%s\n' '  local fake_config_target'
+    printf '%s\n' '  fake_sdk_env_target="$fake_identifier"'
+    printf '%s\n' '  [[ -n "${FAKE_SDK_ENV_OPERATION_FILE:-}" && -f "$FAKE_SDK_ENV_OPERATION_FILE" ]] || return 0'
+    printf '%s\n' '  while read -r fake_config_candidate fake_config_target; do'
+    printf '%s\n' '    if [[ "$fake_config_candidate" == "$fake_candidate" ]]; then fake_sdk_env_target="$fake_config_target"; return 0; fi'
+    printf '%s\n' '  done < "$FAKE_SDK_ENV_OPERATION_FILE"'
+    printf '%s\n' '}'
+    printf '%s\n' 'fake_sdk_env_install() {'
+    printf '%s\n' '  local fake_candidate'
+    printf '%s\n' '  local fake_identifier'
+    printf '%s\n' '  local fake_java_identifier=""'
+    printf '%s\n' '  [[ -f .sdkmanrc ]] || return 65'
+    printf '%s\n' '  while IFS="=" read -r fake_candidate fake_identifier; do'
+    printf '%s\n' '    [[ -n "$fake_candidate" && -n "$fake_identifier" ]] || continue'
+    printf '%s\n' '    fake_sdk_env_operation_target "$fake_candidate" "$fake_identifier"'
+    printf '%s\n' '    fake_sdk_set_candidate_current "$fake_candidate" "$fake_sdk_env_target" || return $?'
+    printf '%s\n' '    if [[ "$fake_candidate" == java ]]; then fake_java_identifier="$fake_identifier"; fi'
+    printf '%s\n' '  done < .sdkmanrc'
+    printf '%s\n' '  if [[ -n "$fake_java_identifier" ]]; then'
+    printf '%s\n' '    fake_java_home="${SDKMAN_CANDIDATES_DIR}/java/${fake_java_identifier}"'
+    printf '%s\n' '    [[ -x "$fake_java_home/bin/java" ]] || fake_sdk_write_candidate "$fake_java_home"'
+    printf '%s\n' '    export JAVA_HOME="$fake_java_home"'
+    printf '%s\n' '    export PATH="$JAVA_HOME/bin:$PATH"'
+    printf '%s\n' '  fi'
+    printf '%s\n' '  fake_sdk_run_third_writer || return $?'
+    printf '%s\n' '  return "${FAKE_SDK_ENV_INSTALL_STATUS:-0}"'
+    printf '%s\n' '}'
+    printf '%s\n' 'fake_sdk_run_third_writer() {'
+    printf '%s\n' '  local fake_writer_pid'
+    printf '%s\n' '  local fake_writer_candidate="${FAKE_SDK_THIRD_WRITER_CANDIDATE:-java}"'
+    printf '%s\n' '  local fake_writer_current="${SDKMAN_CANDIDATES_DIR}/${fake_writer_candidate}/current"'
+    printf '%s\n' '  if [[ -z "${FAKE_SDK_THIRD_WRITER_TARGET:-}" ]]; then return 0; fi'
+    printf '%s\n' '  "$BASH" -c '\''set -e'
+    printf '%s\n' '    fake_writer_current="${SDKMAN_CANDIDATES_DIR}/${FAKE_SDK_THIRD_WRITER_CANDIDATE:-java}/current"'
+    printf '%s\n' '    mkdir -p "$(dirname "$fake_writer_current")"'
+    printf '%s\n' '    if [[ -L "$fake_writer_current" || -e "$fake_writer_current" ]]; then unlink "$fake_writer_current"; fi'
+    printf '%s\n' '    ln -s -- "$FAKE_SDK_THIRD_WRITER_TARGET" "$fake_writer_current"'
+    printf '%s\n' '    printf "third-writer pid=<%s> candidate=<%s> target=<%s>\\n" "$$" "${FAKE_SDK_THIRD_WRITER_CANDIDATE:-java}" "$FAKE_SDK_THIRD_WRITER_TARGET" >> "${FAKE_THIRD_WRITER_LOG:?}"'\'' &'
+    printf '%s\n' '  fake_writer_pid=$!'
+    printf '%s\n' '  wait "$fake_writer_pid" || return $?'
+    printf '%s\n' '  printf "sdk third-writer waited-pid=<%s> candidate=<%s> target=<%s>\\n" "$fake_writer_pid" "$fake_writer_candidate" "$FAKE_SDK_THIRD_WRITER_TARGET" >> "${FAKE_SDK_LOG:?}"'
     printf '%s\n' '}'
     printf '%s\n' 'sdk() {'
     printf '%s\n' '  {'
+    printf '%s\n' '    printf "sdk pid=<%s>\\n" "$$"'
     printf '%s\n' '    printf "sdk USE=<%s>\\n" "${USE-<unset>}"'
     printf '%s\n' '    printf "sdk argc=%s\\n" "$#"'
     printf '%s\n' '    sdk_index=0'
@@ -230,6 +372,7 @@ write_fake_init() {
     printf '%s\n' '        none) : ;;'
     printf '%s\n' '        *) printf "unknown install mutation: %s\\n" "${FAKE_SDK_INSTALL_MUTATE}" >&2; return 99 ;;'
     printf '%s\n' '      esac'
+    printf '%s\n' '      fake_sdk_run_third_writer || return $?'
     printf '%s\n' '      return "${FAKE_SDK_INSTALL_STATUS:-0}"'
     printf '%s\n' '      ;;'
     printf '%s\n' '    use)'
@@ -241,7 +384,13 @@ write_fake_init() {
     printf '%s\n' '        none) : ;;'
     printf '%s\n' '        *) printf "unknown use mutation: %s\\n" "${FAKE_SDK_USE_MUTATE}" >&2; return 98 ;;'
     printf '%s\n' '      esac'
+    printf '%s\n' '      fake_sdk_run_third_writer || return $?'
     printf '%s\n' '      return "${FAKE_SDK_USE_STATUS:-0}"'
+    printf '%s\n' '      ;;'
+    printf '%s\n' '    env)'
+    printf '%s\n' '      [[ "${2-}" == install ]] || return 64'
+    printf '%s\n' '      fake_sdk_env_install'
+    printf '%s\n' '      return $?'
     printf '%s\n' '      ;;'
     printf '%s\n' '    *) return 64 ;;'
     printf '%s\n' '  esac'
@@ -259,6 +408,19 @@ write_fake_mv() {
     printf '%s\n' '  printf "mv arg[%s]=<%s>\\n" "$mv_index" "$mv_arg" >> "$log"'
     printf '%s\n' '  mv_index=$((mv_index + 1))'
     printf '%s\n' 'done'
+    printf '%s\n' 'if [[ "${1-}" == "-fh" && -n "${FAKE_MV_GNU_FALLBACK_WRITER_TARGET:-}" ]]; then'
+    printf '%s\n' '  "$BASH" -c '\''set -e'
+    printf '%s\n' '    fake_writer_candidate="${FAKE_MV_GNU_FALLBACK_WRITER_CANDIDATE:-java}"'
+    printf '%s\n' '    fake_writer_current="${SDKMAN_CANDIDATES_DIR}/${fake_writer_candidate}/current"'
+    printf '%s\n' '    printf "gnu-fallback-writer-ready pid=<%s> candidate=<%s>\\n" "$$" "$fake_writer_candidate" > "${FAKE_MV_GNU_FALLBACK_WRITER_MARKER:?}"'
+    printf '%s\n' '    if [[ -L "$fake_writer_current" || -e "$fake_writer_current" ]]; then unlink "$fake_writer_current"; fi'
+    printf '%s\n' '    ln -s -- "$FAKE_MV_GNU_FALLBACK_WRITER_TARGET" "$fake_writer_current"'
+    printf '%s\n' '    printf "gnu-fallback-writer-complete pid=<%s> candidate=<%s> target=<%s>\\n" "$$" "$fake_writer_candidate" "$FAKE_MV_GNU_FALLBACK_WRITER_TARGET" >> "${FAKE_MV_GNU_FALLBACK_WRITER_LOG:?}"'\'' &'
+    printf '%s\n' '  fake_mv_writer_pid=$!'
+    printf '%s\n' '  wait "$fake_mv_writer_pid" || exit $?'
+    printf '%s\n' '  printf "mv gnu-fallback parent-pid=<%s> waited-writer-pid=<%s> target=<%s>\\n" "$$" "$fake_mv_writer_pid" "$FAKE_MV_GNU_FALLBACK_WRITER_TARGET" >> "$log"'
+    printf '%s\n' '  exit 64'
+    printf '%s\n' 'fi'
     printf '%s\n' 'case "${FAKE_MV_MODE:-bsd}" in'
     printf '%s\n' '  bsd) [[ "${1-}" == "-fh" ]] || exit 66 ;;'
     printf '%s\n' '  gnu) if [[ "${1-}" == "-fh" ]]; then exit 64; fi; [[ "${1-}" == "-Tf" ]] || exit 65 ;;'
@@ -267,6 +429,7 @@ write_fake_mv() {
     printf '%s\n' 'esac'
     printf '%s\n' 'mv_source="${2-}"'
     printf '%s\n' 'mv_destination="${3-}"'
+    printf '%s\n' 'if [[ -n "${FAKE_MV_FAIL_DESTINATION:-}" && "$mv_destination" == "$FAKE_MV_FAIL_DESTINATION" ]]; then exit 75; fi'
     printf '%s\n' 'if "${FAKE_REAL_MV:?}" -fh "$mv_source" "$mv_destination" 2>/dev/null; then'
     printf '%s\n' '  :'
     printf '%s\n' 'elif [[ -L "$mv_source" ]] && "${FAKE_REAL_MV:?}" -Tf "$mv_source" "$mv_destination" 2>/dev/null; then'
@@ -276,6 +439,28 @@ write_fake_mv() {
     printf '%s\n' 'fi'
   } > "$fake_bin/mv"
   chmod +x "$fake_bin/mv"
+}
+
+write_fake_ln() {
+  {
+    printf '%s\n' '#!/usr/bin/env bash'
+    printf '%s\n' 'fake_ln_destination=""'
+    printf '%s\n' 'for fake_ln_arg in "$@"; do fake_ln_destination="$fake_ln_arg"; done'
+    printf '%s\n' 'if "${FAKE_REAL_LN:?}" "$@"; then :; else exit $?; fi'
+    printf '%s\n' 'if [[ -z "${FAKE_LN_PRE_CAS_WRITER_TARGET:-}" ]]; then exit 0; fi'
+    printf '%s\n' 'case "$fake_ln_destination" in'
+    printf '%s\n' '  "${FAKE_RESTORE_TEMP_PREFIX:?}"*/current)'
+    printf '%s\n' '    "$BASH" -c '\''set -e'
+    printf '%s\n' '      if [[ -L "$FAKE_CURRENT_PATH" || -e "$FAKE_CURRENT_PATH" ]]; then unlink "$FAKE_CURRENT_PATH"; fi'
+    printf '%s\n' '      "$FAKE_REAL_LN" -s -- "$FAKE_LN_PRE_CAS_WRITER_TARGET" "$FAKE_CURRENT_PATH"'
+    printf '%s\n' '      printf "pre-cas writer pid=<%s> target=<%s>\\n" "$$" "$FAKE_LN_PRE_CAS_WRITER_TARGET" >> "${FAKE_PRE_CAS_WRITER_LOG:?}"'\'' &'
+    printf '%s\n' '    fake_ln_writer_pid=$!'
+    printf '%s\n' '    wait "$fake_ln_writer_pid" || exit $?'
+    printf '%s\n' '    printf "ln wrapper waited pre-cas writer pid=<%s>\\n" "$fake_ln_writer_pid" >> "${FAKE_PRE_CAS_WRITER_LOG:?}"'
+    printf '%s\n' '    ;;'
+    printf '%s\n' 'esac'
+  } > "$fake_bin/ln"
+  chmod +x "$fake_bin/ln"
 }
 
 write_payload() {
@@ -325,13 +510,27 @@ begin_case() {
   export FAKE_JAVA_LOG="$case_dir/java.log"
   export FAKE_PAYLOAD_LOG="$case_dir/payload.log"
   export FAKE_SHADOW_LOG="$case_dir/shadow.log"
+  export FAKE_THIRD_WRITER_LOG="$case_dir/third-writer.log"
+  export FAKE_PRE_CAS_WRITER_LOG="$case_dir/pre-cas-writer.log"
+  export FAKE_MV_GNU_FALLBACK_WRITER_LOG="$case_dir/gnu-fallback-writer.log"
+  export FAKE_MV_GNU_FALLBACK_WRITER_MARKER="$case_dir/gnu-fallback-writer.ready"
+  export FAKE_SDK_ENV_OPERATION_FILE="$case_dir/env-operation-targets"
   export FAKE_REAL_MV="$real_mv"
+  export FAKE_REAL_LN="$real_ln"
+  export FAKE_RESTORE_TEMP_PREFIX="$case_java_dir/.sdkman-switch-jdk-restore."
   export FAKE_SDK_INSTALL_STATUS=0
   export FAKE_SDK_INSTALL_CREATE=yes
   export FAKE_SDK_INSTALL_MUTATE=none
+  unset FAKE_SDK_THIRD_WRITER_TARGET
+  unset FAKE_SDK_THIRD_WRITER_CANDIDATE
+  unset FAKE_LN_PRE_CAS_WRITER_TARGET
+  unset FAKE_MV_GNU_FALLBACK_WRITER_TARGET
+  unset FAKE_MV_GNU_FALLBACK_WRITER_CANDIDATE
   export FAKE_SDK_USE_STATUS=0
   export FAKE_SDK_USE_MUTATE=none
   export FAKE_MV_MODE=bsd
+  unset FAKE_MV_FAIL_DESTINATION
+  export FAKE_SDK_ENV_INSTALL_STATUS=0
   export FAKE_JAVA_STATUS=0
   export FAKE_PAYLOAD_STATUS=0
   export PATH="$fake_bin:$original_path"
@@ -342,8 +541,13 @@ begin_case() {
   : > "$FAKE_JAVA_LOG"
   : > "$FAKE_PAYLOAD_LOG"
   : > "$FAKE_SHADOW_LOG"
+  : > "$FAKE_THIRD_WRITER_LOG"
+  : > "$FAKE_PRE_CAS_WRITER_LOG"
+  : > "$FAKE_MV_GNU_FALLBACK_WRITER_LOG"
+  : > "$FAKE_SDK_ENV_OPERATION_FILE"
   write_fake_init
   write_fake_mv
+  write_fake_ln
   write_payload
 }
 
@@ -366,6 +570,30 @@ set_default() {
   esac
 }
 
+set_candidate_default() {
+  local candidate="$1"
+  local mode="$2"
+  local identifier="$3"
+  local raw_target="${4:-$identifier}"
+  local current
+
+  current="$(candidate_current_path "$candidate")"
+  mkdir -p "$(dirname "$current")"
+  case "$mode" in
+    absolute)
+      ln -s -- "$SDKMAN_CANDIDATES_DIR/$candidate/$identifier" "$current"
+      ;;
+    relative)
+      ln -s -- "$raw_target" "$current"
+      ;;
+    absent)
+      ;;
+    *)
+      fail "unknown candidate default mode: $mode"
+      ;;
+  esac
+}
+
 run_capture() {
   set +e
   (cd "$case_dir" && "$@") > "$case_dir/stdout" 2> "$case_dir/stderr"
@@ -380,6 +608,159 @@ assert_no_restore_temp_dirs() {
       fail "restore temporary directory remains: $leftover"
     fi
   done
+}
+
+assert_third_writer_ran() {
+  local expected_target="$1"
+  local expected_candidate="${2:-java}"
+  local sdk_pid
+  local writer_pid
+
+  assert_file_contains "$FAKE_THIRD_WRITER_LOG" 'third-writer pid=<' \
+    'third writer records its subprocess PID'
+  assert_file_contains "$FAKE_THIRD_WRITER_LOG" "candidate=<$expected_candidate>" \
+    'third writer records the candidate it changed'
+  assert_file_contains "$FAKE_THIRD_WRITER_LOG" "target=<$expected_target>" \
+    'third writer records its target'
+  assert_file_contains "$FAKE_SDK_LOG" 'sdk third-writer waited-pid=<' \
+    'fake SDK waits for the third writer before returning'
+  sdk_pid="$(sed -n 's/^sdk pid=<\([0-9][0-9]*\)>$/\1/p' "$FAKE_SDK_LOG")"
+  writer_pid="$(sed -n 's/^third-writer pid=<\([0-9][0-9]*\)> candidate=<.*> target=<.*>$/\1/p' "$FAKE_THIRD_WRITER_LOG")"
+  if [[ -z "$sdk_pid" || -z "$writer_pid" ]]; then
+    fail 'third writer PID evidence is missing or malformed'
+  fi
+  if [[ "$sdk_pid" == "$writer_pid" ]]; then
+    fail 'third writer did not run in a distinct subprocess'
+  fi
+}
+
+wait_for_marker() {
+  local marker="$1"
+  local owner_pid="$2"
+  local attempt=0
+
+  while [[ ! -s "$marker" ]]; do
+    if ! kill -0 "$owner_pid" 2>/dev/null; then
+      fail "marker owner stopped before signalling readiness: $owner_pid"
+    fi
+    attempt=$((attempt + 1))
+    if [[ "$attempt" -gt 100 ]]; then
+      fail "timed out waiting for readiness marker: $marker"
+    fi
+    sleep 0.01
+  done
+}
+
+write_complete_lock_fixture() {
+  local owner_pid="$1"
+  local lock_label="$2"
+  local owner_euid="$EUID"
+  local lock_dir="$SDKMAN_CANDIDATES_DIR/.sdkman-switch-jdk.lock"
+
+  mkdir "$lock_dir"
+  printf '%s\n' "$owner_pid" > "$lock_dir/pid"
+  printf '%s\n' "$owner_euid" > "$lock_dir/euid"
+  printf '%s\n' "${owner_pid}:${owner_euid}:fixture-nonce-a:fixture-nonce-b" > "$lock_dir/token"
+  printf '%s\n' "$lock_label" > "$lock_dir/label"
+  live_lock_fixture_dir="$lock_dir"
+}
+
+snapshot_lock_fixture() {
+  local lock_dir="$1"
+  local field
+
+  for field in pid euid token label; do
+    if [[ ! -f "$lock_dir/$field" ]]; then
+      fail "lock metadata is not a regular file: $lock_dir/$field"
+    fi
+    cp "$lock_dir/$field" "$case_dir/lock-before-$field"
+  done
+}
+
+assert_lock_fixture_unchanged() {
+  local lock_dir="$1"
+  local field
+
+  for field in pid euid token label; do
+    if [[ ! -f "$lock_dir/$field" ]]; then
+      fail "live lock metadata is missing or not regular: $lock_dir/$field"
+    fi
+    if ! cmp "$case_dir/lock-before-$field" "$lock_dir/$field" >/dev/null 2>&1; then
+      fail "live lock metadata changed unexpectedly: $lock_dir/$field"
+    fi
+  done
+}
+
+start_live_lock_owner() {
+  local marker="$case_dir/live-lock-owner.ready"
+
+  "$BASH" -c '
+    marker="$1"
+    printf "live-lock-owner-ready pid=<%s>\\n" "$$" > "$marker"
+    trap "exit 0" HUP INT TERM
+    while :; do
+      read -r -t 1 ignored || :
+    done
+  ' bash "$marker" &
+  live_lock_owner_pid=$!
+  register_background_pid "$live_lock_owner_pid"
+  wait_for_marker "$marker" "$live_lock_owner_pid"
+  if [[ "$live_lock_owner_pid" == "$$" ]] || ! kill -0 "$live_lock_owner_pid" 2>/dev/null; then
+    fail 'live lock owner is not a separate live process'
+  fi
+}
+
+release_live_lock_fixture() {
+  local lock_dir="$live_lock_fixture_dir"
+
+  if [[ -n "$live_lock_owner_pid" ]] && kill -0 "$live_lock_owner_pid" 2>/dev/null; then
+    kill "$live_lock_owner_pid"
+  fi
+  if [[ -n "$live_lock_owner_pid" ]]; then
+    wait "$live_lock_owner_pid" 2>/dev/null || true
+    if kill -0 "$live_lock_owner_pid" 2>/dev/null; then
+      fail "live lock owner remained after cleanup: $live_lock_owner_pid"
+    fi
+  fi
+  background_pids=''
+  live_lock_owner_pid=''
+  remove_lock_fixture_dir "$lock_dir"
+  live_lock_fixture_dir=''
+  assert_path_absent "$lock_dir" 'live lock fixture is removed after the scenario'
+}
+
+assert_pre_cas_writer_ran() {
+  local expected_target="$1"
+
+  assert_file_contains "$FAKE_PRE_CAS_WRITER_LOG" 'pre-cas writer pid=<' \
+    'pre-CAS writer records its subprocess PID'
+  assert_file_contains "$FAKE_PRE_CAS_WRITER_LOG" "target=<$expected_target>" \
+    'pre-CAS writer records the competing target'
+  assert_file_contains "$FAKE_PRE_CAS_WRITER_LOG" 'ln wrapper waited pre-cas writer pid=<' \
+    'ln wrapper waits for the pre-CAS writer before returning'
+}
+
+assert_gnu_fallback_writer_ran() {
+  local expected_target="$1"
+  local wrapper_pid
+  local writer_pid
+
+  assert_file_contains "$FAKE_MV_GNU_FALLBACK_WRITER_MARKER" \
+    'gnu-fallback-writer-ready pid=<' \
+    'GNU fallback writer records its readiness marker and PID'
+  assert_file_contains "$FAKE_MV_GNU_FALLBACK_WRITER_LOG" \
+    "target=<$expected_target>" \
+    'GNU fallback writer records the competing target'
+  assert_file_contains "$FAKE_MV_LOG" 'mv gnu-fallback parent-pid=<' \
+    'fake mv waits for the GNU fallback writer'
+  wrapper_pid="$(sed -n 's/^mv gnu-fallback parent-pid=<\([0-9][0-9]*\)> waited-writer-pid=<.*> target=<.*>$/\1/p' "$FAKE_MV_LOG")"
+  writer_pid="$(sed -n 's/^gnu-fallback-writer-complete pid=<\([0-9][0-9]*\)> candidate=<.*> target=<.*>$/\1/p' "$FAKE_MV_GNU_FALLBACK_WRITER_LOG")"
+  if [[ -z "$wrapper_pid" || -z "$writer_pid" ]]; then
+    fail 'GNU fallback writer PID evidence is missing or malformed'
+  fi
+  if [[ "$wrapper_pid" == "$writer_pid" ]]; then
+    fail 'GNU fallback writer did not run in a distinct subprocess'
+  fi
 }
 
 scenario_install_success_absolute_unchanged() {
@@ -537,12 +918,12 @@ scenario_install_restore_failure() {
   local target_identifier='21.0.9-tem'
   create_java_candidate "$case_java_dir/$old_identifier"
   set_default absolute "$old_identifier"
-  export FAKE_SDK_INSTALL_MUTATE=target_abs
+  export FAKE_SDK_INSTALL_MUTATE=target_rel
   export FAKE_MV_MODE=fail
 
   run_capture bash "$install_script" "$target_identifier"
   assert_status 1 'install restoration failure returns one'
-  assert_default_state "link:$case_java_dir/$target_identifier" 'failed install restoration leaves observed changed default'
+  assert_default_state "link:$target_identifier" 'failed install restoration leaves observed changed default'
   assert_file_contains "$FAKE_MV_LOG" 'mv arg[0]=<-fh>' 'restore failure records BSD mv attempt'
   assert_file_contains "$FAKE_MV_LOG" 'mv arg[0]=<-Tf>' 'restore failure records GNU fallback attempt'
   assert_file_contains "$case_dir/stderr" 'automatic restoration failed' 'restore failure is reported'
@@ -575,6 +956,130 @@ scenario_install_reserved_current() {
   assert_status 2 'reserved current identifier is rejected'
   assert_file_empty "$FAKE_INIT_LOG" 'reserved install identifier is rejected before SDKMAN init'
   assert_file_contains "$case_dir/stderr" 'reserved name' 'reserved install identifier is reported'
+  scenario_count=$((scenario_count + 1))
+  printf 'PASS %s\n' "$case_name"
+}
+
+scenario_install_concurrent_third_writer() {
+  begin_case install_concurrent_third_writer
+  local old_identifier='17.0.9-tem'
+  local target_identifier='21.0.9-tem'
+  local third_identifier='22.0.1-tem'
+  local third_target="$case_java_dir/$third_identifier"
+  create_java_candidate "$case_java_dir/$old_identifier"
+  create_java_candidate "$third_target"
+  set_default absolute "$old_identifier"
+  export FAKE_SDK_INSTALL_MUTATE=target_rel
+  export FAKE_SDK_THIRD_WRITER_TARGET="$third_target"
+
+  run_capture bash "$install_script" "$target_identifier"
+  assert_status 1 'install refuses a concurrent third-writer default change'
+  assert_third_writer_ran "$third_target"
+  assert_default_state "link:$third_target" \
+    'install preserves the third writer default instead of restoring the stale original default'
+  assert_file_contains "$case_dir/stderr" 'drifted after the SDKMAN operation' \
+    'install reports the concurrent drift refusal'
+  scenario_count=$((scenario_count + 1))
+  printf 'PASS %s\n' "$case_name"
+}
+
+scenario_lock_live_owner_refusal() {
+  begin_case lock_live_owner_refusal
+  local old_identifier='17.0.9-tem'
+  local target_identifier='21.0.9-tem'
+  local lock_dir
+
+  create_java_candidate "$case_java_dir/$old_identifier"
+  set_default absolute "$old_identifier"
+  start_live_lock_owner
+  write_complete_lock_fixture "$live_lock_owner_pid" 'live-owner-fixture'
+  lock_dir="$live_lock_fixture_dir"
+  snapshot_lock_fixture "$lock_dir"
+
+  run_capture bash "$install_script" "$target_identifier"
+  assert_default_state "link:$case_java_dir/$old_identifier" 'live lock refusal leaves the default unchanged'
+  assert_lock_fixture_unchanged "$lock_dir"
+  release_live_lock_fixture
+  assert_file_empty "$FAKE_SDK_LOG" 'live lock blocks SDKMAN invocation'
+  assert_status 1 'live lock owner refusal returns one'
+  assert_no_restore_temp_dirs
+  scenario_count=$((scenario_count + 1))
+  printf 'PASS %s\n' "$case_name"
+}
+
+scenario_lock_stale_owner_recovery() {
+  begin_case lock_stale_owner_recovery
+  local target_identifier='21.0.9-tem'
+  local stale_owner_pid
+  local lock_dir
+
+  "$BASH" -c 'exit 0' &
+  stale_owner_pid=$!
+  wait "$stale_owner_pid"
+  if kill -0 "$stale_owner_pid" 2>/dev/null; then
+    fail "stale lock owner PID is unexpectedly live: $stale_owner_pid"
+  fi
+  write_complete_lock_fixture "$stale_owner_pid" 'stale-owner-fixture'
+  lock_dir="$live_lock_fixture_dir"
+
+  run_capture bash "$install_script" "$target_identifier"
+  assert_status 0 'stale lock is reaped before a successful install'
+  assert_file_contains "$FAKE_SDK_LOG" 'sdk arg[0]=<install>' 'stale lock recovery proceeds with SDKMAN'
+  assert_path_absent "$lock_dir" 'stale lock is absent after the operation'
+  live_lock_fixture_dir=''
+  assert_no_restore_temp_dirs
+  scenario_count=$((scenario_count + 1))
+  printf 'PASS %s\n' "$case_name"
+}
+
+scenario_restore_pre_cas_third_writer() {
+  begin_case restore_pre_cas_third_writer
+  local old_identifier='17.0.9-tem'
+  local target_identifier='21.0.9-tem'
+  local third_identifier='22.0.1-tem'
+  local third_target="$case_java_dir/$third_identifier"
+
+  create_java_candidate "$case_java_dir/$old_identifier"
+  create_java_candidate "$third_target"
+  set_default absolute "$old_identifier"
+  export FAKE_SDK_INSTALL_MUTATE=target_rel
+  export FAKE_LN_PRE_CAS_WRITER_TARGET="$third_target"
+
+  run_capture bash "$install_script" "$target_identifier"
+  assert_status 1 'rollback pre-CAS third-writer refusal returns one'
+  assert_pre_cas_writer_ran "$third_target"
+  assert_default_state "link:$third_target" 'rollback preserves the pre-CAS third-writer target instead of overwriting it with A'
+  assert_file_contains "$case_dir/stderr" 'rollback drift' 'rollback reports its pre-CAS drift refusal'
+  assert_file_empty "$FAKE_MV_LOG" 'rollback drift refusal does not call mv'
+  assert_no_restore_temp_dirs
+  scenario_count=$((scenario_count + 1))
+  printf 'PASS %s\n' "$case_name"
+}
+
+scenario_restore_gnu_fallback_third_writer() {
+  begin_case restore_gnu_fallback_third_writer
+  local old_identifier='17.0.9-tem'
+  local target_identifier='21.0.9-tem'
+  local third_identifier='22.0.1-tem'
+  local third_target="$case_java_dir/$third_identifier"
+
+  create_java_candidate "$case_java_dir/$old_identifier"
+  create_java_candidate "$third_target"
+  set_default absolute "$old_identifier"
+  export FAKE_SDK_INSTALL_MUTATE=target_rel
+  export FAKE_MV_MODE=gnu
+  export FAKE_MV_GNU_FALLBACK_WRITER_TARGET="$third_target"
+
+  run_capture bash "$install_script" "$target_identifier"
+  assert_status 1 'GNU fallback third-writer refusal returns one'
+  assert_gnu_fallback_writer_ran "$third_target"
+  assert_default_state "link:$third_target" \
+    'GNU fallback second read preserves the competing default instead of overwriting it with A'
+  assert_file_contains "$case_dir/stderr" 'rollback drift' \
+    'GNU fallback race reports rollback drift'
+  assert_file_not_contains "$FAKE_MV_LOG" 'mv arg[0]=<-Tf>' \
+    'GNU fallback race refusal never attempts the GNU mv replacement'
+  assert_no_restore_temp_dirs
   scenario_count=$((scenario_count + 1))
   printf 'PASS %s\n' "$case_name"
 }
@@ -685,7 +1190,7 @@ scenario_run_use_failure_preserves_status() {
   create_java_candidate "$case_java_dir/$target_identifier"
   set_default absolute "$old_identifier"
   export FAKE_SDK_USE_STATUS=19
-  export FAKE_SDK_USE_MUTATE=target_abs
+  export FAKE_SDK_USE_MUTATE=target_rel
 
   run_capture bash "$run_script" "$target_identifier" -- "$case_dir/payload" should-not-run
   assert_status 19 'run failure preserves sdk use status'
@@ -725,12 +1230,12 @@ scenario_run_restore_failure() {
   create_java_candidate "$case_java_dir/$old_identifier"
   create_java_candidate "$case_java_dir/$target_identifier"
   set_default absolute "$old_identifier"
-  export FAKE_SDK_USE_MUTATE=target_abs
+  export FAKE_SDK_USE_MUTATE=target_rel
   export FAKE_MV_MODE=fail
 
   run_capture bash "$run_script" "$target_identifier" -- "$case_dir/payload" should-not-run
   assert_status 1 'run restoration failure returns one'
-  assert_default_state "link:$case_java_dir/$target_identifier" 'failed run restoration leaves observed changed default'
+  assert_default_state "link:$target_identifier" 'failed run restoration leaves observed changed default'
   assert_file_empty "$FAKE_PAYLOAD_LOG" 'payload does not run after restore failure'
   assert_file_contains "$case_dir/stderr" 'automatic restoration failed' 'run restore failure is reported'
   assert_no_restore_temp_dirs
@@ -768,6 +1273,236 @@ scenario_run_reserved_current() {
   printf 'PASS %s\n' "$case_name"
 }
 
+scenario_run_concurrent_third_writer() {
+  begin_case run_concurrent_third_writer
+  local old_identifier='17.0.9-tem'
+  local target_identifier='21.0.9-tem'
+  local third_identifier='22.0.1-tem'
+  local third_target="$case_java_dir/$third_identifier"
+  create_java_candidate "$case_java_dir/$old_identifier"
+  create_java_candidate "$case_java_dir/$target_identifier"
+  create_java_candidate "$third_target"
+  set_default absolute "$old_identifier"
+  export FAKE_SDK_USE_MUTATE=target_rel
+  export FAKE_SDK_THIRD_WRITER_TARGET="$third_target"
+
+  run_capture bash "$run_script" "$target_identifier" -- "$case_dir/payload" should-not-run
+  assert_status 1 'run refuses a concurrent third-writer default change'
+  assert_third_writer_ran "$third_target"
+  assert_file_empty "$FAKE_PAYLOAD_LOG" 'payload does not run after a concurrent default change'
+  assert_default_state "link:$third_target" \
+    'run preserves the third writer default instead of restoring the stale original default'
+  assert_file_contains "$case_dir/stderr" 'drifted after the SDKMAN operation' \
+    'run reports the concurrent drift refusal'
+  scenario_count=$((scenario_count + 1))
+  printf 'PASS %s\n' "$case_name"
+}
+
+scenario_full_env_success_allows_authorized_default() {
+  begin_case full_env_success_allows_authorized_default
+  local old_java_identifier='17.0.9-tem'
+  local java_identifier='21.0.9-tem'
+  local maven_identifier='3.9.8'
+  local old_java_raw="../java/$old_java_identifier"
+
+  create_java_candidate "$case_java_dir/$java_identifier"
+  set_candidate_default java relative "$old_java_identifier" "$old_java_raw"
+  set_candidate_default maven absent unused
+  write_sdkmanrc "java=$java_identifier" "maven=$maven_identifier"
+  set_full_env_operation_raw_target java "$java_identifier"
+  set_full_env_operation_raw_target maven "$maven_identifier"
+  export FAKE_PAYLOAD_STATUS=23
+
+  run_capture bash "$full_env_script" --allow-default maven -- "$case_dir/payload" \
+    'arg with spaces' '' 'glob*value?' '--flag=value'
+  assert_status 23 'full environment preserves the payload status'
+  assert_link_target_raw "$old_java_raw" "$case_current" \
+    'unapproved Java default is restored byte-for-byte'
+  assert_candidate_default_state maven "link:$maven_identifier" \
+    'authorized absent Maven default remains the requested raw identifier'
+  assert_file_contains "$FAKE_SDK_LOG" 'sdk arg[0]=<env>' \
+    'full environment invokes sdk env'
+  assert_file_contains "$FAKE_SDK_LOG" 'sdk arg[1]=<install>' \
+    'full environment invokes sdk env install'
+  {
+    printf 'payload JAVA_HOME=<%s>\n' "$case_java_dir/$java_identifier"
+    printf 'payload PATH=<%s>\n' "$case_java_dir/$java_identifier/bin:$fake_bin:$original_path"
+    printf 'payload java=<%s>\n' "$case_java_dir/$java_identifier/bin/java"
+    printf 'payload argc=4\n'
+    printf 'payload arg[0]=<arg with spaces>\n'
+    printf 'payload arg[1]=<>\n'
+    printf 'payload arg[2]=<glob*value?>\n'
+    printf 'payload arg[3]=<--flag=value>\n'
+  } > "$case_dir/expected-full-env-payload.log"
+  if ! cmp "$case_dir/expected-full-env-payload.log" "$FAKE_PAYLOAD_LOG" >/dev/null 2>&1; then
+    fail 'full environment did not preserve payload argv or SDKMAN environment'
+  fi
+  scenario_count=$((scenario_count + 1))
+  printf 'PASS %s\n' "$case_name"
+}
+
+scenario_full_env_restores_unapproved_defaults() {
+  begin_case full_env_restores_unapproved_defaults
+  local old_java_identifier='17.0.9-tem'
+  local java_identifier='21.0.9-tem'
+  local old_maven_raw=$'../maven/3.8.6\n'
+  local maven_identifier='3.9.8'
+
+  create_java_candidate "$case_java_dir/$java_identifier"
+  set_candidate_default java relative "$old_java_identifier" "../java/$old_java_identifier"
+  set_candidate_default maven relative unused "$old_maven_raw"
+  write_sdkmanrc "java=$java_identifier" "maven=$maven_identifier"
+  set_full_env_operation_raw_target java "$java_identifier"
+  set_full_env_operation_raw_target maven "$maven_identifier"
+
+  run_capture bash "$full_env_script" -- "$case_dir/payload" restored
+  assert_status 0 'full environment with no authorization restores all changed defaults'
+  assert_candidate_default_state java "link:../java/$old_java_identifier" \
+    'unapproved Java default is restored'
+  assert_link_target_raw "$old_maven_raw" "$(candidate_current_path maven)" \
+    'unapproved Maven default is restored byte-for-byte'
+  assert_file_contains "$FAKE_PAYLOAD_LOG" 'payload arg[0]=<restored>' \
+    'payload runs after successful full-environment reconciliation'
+  scenario_count=$((scenario_count + 1))
+  printf 'PASS %s\n' "$case_name"
+}
+
+scenario_full_env_concurrent_third_writer() {
+  begin_case full_env_concurrent_third_writer
+  local old_java_identifier='17.0.9-tem'
+  local java_identifier='21.0.9-tem'
+  local old_maven_identifier='3.8.6'
+  local maven_identifier='3.9.8'
+  local third_identifier='3.9.9'
+  local third_target="$SDKMAN_CANDIDATES_DIR/maven/$third_identifier"
+
+  create_java_candidate "$case_java_dir/$java_identifier"
+  set_candidate_default java relative "$old_java_identifier" "../java/$old_java_identifier"
+  set_candidate_default maven relative "$old_maven_identifier" "../maven/$old_maven_identifier"
+  write_sdkmanrc "java=$java_identifier" "maven=$maven_identifier"
+  export FAKE_SDK_THIRD_WRITER_CANDIDATE=maven
+  export FAKE_SDK_THIRD_WRITER_TARGET="$third_target"
+
+  run_capture bash "$full_env_script" -- "$case_dir/payload" should-not-run
+  assert_status 1 'full environment refuses a concurrent third-writer default change'
+  assert_third_writer_ran "$third_target" maven
+  assert_candidate_default_state maven "link:$third_target" \
+    'full environment preserves the third-writer Maven default'
+  assert_candidate_default_state java "link:../java/$old_java_identifier" \
+    'other candidates are reconciled after third-writer detection'
+  assert_file_empty "$FAKE_PAYLOAD_LOG" \
+    'payload does not run after a concurrent full-environment default change'
+  scenario_count=$((scenario_count + 1))
+  printf 'PASS %s\n' "$case_name"
+}
+
+scenario_full_env_malformed_sdkmanrc() {
+  begin_case full_env_malformed_sdkmanrc
+  write_sdkmanrc 'java=21.0.9-tem' 'this line is malformed'
+
+  run_capture bash "$full_env_script" -- "$case_dir/payload" should-not-run
+  assert_status 2 'malformed .sdkmanrc is rejected as command-line misuse'
+  assert_file_empty "$FAKE_SDK_LOG" 'malformed .sdkmanrc blocks sdk invocation'
+  assert_file_empty "$FAKE_PAYLOAD_LOG" 'malformed .sdkmanrc blocks payload invocation'
+  scenario_count=$((scenario_count + 1))
+  printf 'PASS %s\n' "$case_name"
+}
+
+scenario_full_env_unsupported_current() {
+  begin_case full_env_unsupported_current
+  local java_identifier='21.0.9-tem'
+  local maven_identifier='3.9.8'
+
+  create_java_candidate "$case_java_dir/$java_identifier"
+  mkdir -p "$(candidate_current_path maven)"
+  write_sdkmanrc "java=$java_identifier" "maven=$maven_identifier"
+
+  run_capture bash "$full_env_script" -- "$case_dir/payload" should-not-run
+  assert_status 1 'unsupported SDKMAN current path blocks full environment activation'
+  assert_file_empty "$FAKE_SDK_LOG" 'unsupported current path blocks sdk invocation'
+  assert_file_empty "$FAKE_PAYLOAD_LOG" 'unsupported current path blocks payload invocation'
+  scenario_count=$((scenario_count + 1))
+  printf 'PASS %s\n' "$case_name"
+}
+
+scenario_full_env_restore_failure() {
+  begin_case full_env_restore_failure
+  local old_java_identifier='17.0.9-tem'
+  local java_identifier='21.0.9-tem'
+  local old_maven_raw='../maven/3.8.6'
+  local maven_identifier='3.9.8'
+
+  create_java_candidate "$case_java_dir/$java_identifier"
+  set_candidate_default java relative "$old_java_identifier" "../java/$old_java_identifier"
+  set_candidate_default maven relative unused "$old_maven_raw"
+  write_sdkmanrc "java=$java_identifier" "maven=$maven_identifier"
+  export FAKE_MV_FAIL_DESTINATION="$case_current"
+
+  run_capture bash "$full_env_script" -- "$case_dir/payload" should-not-run
+  assert_status 1 'full environment returns one when a default cannot be restored'
+  assert_candidate_default_state java "link:$java_identifier" \
+    'failed Java restoration leaves the observed post-SDKMAN default'
+  assert_link_target_raw "$old_maven_raw" "$(candidate_current_path maven)" \
+    'full environment continues best-effort reconciliation after Java restoration fails'
+  assert_file_empty "$FAKE_PAYLOAD_LOG" 'payload does not run after restoration failure'
+  scenario_count=$((scenario_count + 1))
+  printf 'PASS %s\n' "$case_name"
+}
+
+scenario_full_env_sdk_failure_blocks_payload() {
+  begin_case full_env_sdk_failure_blocks_payload
+  local old_java_identifier='17.0.9-tem'
+  local java_identifier='21.0.9-tem'
+  local old_maven_identifier='3.8.6'
+  local maven_identifier='3.9.8'
+
+  create_java_candidate "$case_java_dir/$java_identifier"
+  set_candidate_default java relative "$old_java_identifier" "../java/$old_java_identifier"
+  set_candidate_default maven relative "$old_maven_identifier" "../maven/$old_maven_identifier"
+  write_sdkmanrc "java=$java_identifier" "maven=$maven_identifier"
+  export FAKE_SDK_ENV_INSTALL_STATUS=17
+
+  run_capture bash "$full_env_script" -- "$case_dir/payload" should-not-run
+  assert_status 17 'full environment preserves sdk env install failure status after reconciliation'
+  assert_candidate_default_state java "link:../java/$old_java_identifier" \
+    'sdk failure still reconciles Java default'
+  assert_candidate_default_state maven "link:../maven/$old_maven_identifier" \
+    'sdk failure still reconciles Maven default'
+  assert_file_empty "$FAKE_PAYLOAD_LOG" 'payload does not run after sdk env install failure'
+  scenario_count=$((scenario_count + 1))
+  printf 'PASS %s\n' "$case_name"
+}
+
+scenario_full_env_invalid_authorization() {
+  begin_case full_env_invalid_authorization
+  local java_identifier='21.0.9-tem'
+  local maven_identifier='3.9.8'
+
+  create_java_candidate "$case_java_dir/$java_identifier"
+  write_sdkmanrc "java=$java_identifier" "maven=$maven_identifier"
+
+  run_capture bash "$full_env_script" --allow-default 'maven/invalid' -- "$case_dir/payload"
+  assert_status 2 'invalid authorization candidate is rejected'
+  assert_file_empty "$FAKE_SDK_LOG" 'invalid authorization blocks sdk invocation'
+  assert_file_empty "$FAKE_PAYLOAD_LOG" 'invalid authorization blocks payload invocation'
+
+  : > "$FAKE_SDK_LOG"
+  : > "$FAKE_PAYLOAD_LOG"
+  run_capture bash "$full_env_script" --allow-default maven --allow-default maven -- "$case_dir/payload"
+  assert_status 2 'duplicate authorization candidate is rejected'
+  assert_file_empty "$FAKE_SDK_LOG" 'duplicate authorization blocks sdk invocation'
+  assert_file_empty "$FAKE_PAYLOAD_LOG" 'duplicate authorization blocks payload invocation'
+
+  : > "$FAKE_SDK_LOG"
+  : > "$FAKE_PAYLOAD_LOG"
+  run_capture bash "$full_env_script" --allow-default gradle -- "$case_dir/payload"
+  assert_status 2 'authorization for a candidate absent from .sdkmanrc is rejected'
+  assert_file_empty "$FAKE_SDK_LOG" 'out-of-scope authorization blocks sdk invocation'
+  assert_file_empty "$FAKE_PAYLOAD_LOG" 'out-of-scope authorization blocks payload invocation'
+  scenario_count=$((scenario_count + 1))
+  printf 'PASS %s\n' "$case_name"
+}
+
 run_scenario() {
   local scenario_function="$1"
   local scenario_name="${scenario_function#scenario_}"
@@ -787,6 +1522,11 @@ run_scenario scenario_install_unexpected_default_gnu_fallback
 run_scenario scenario_install_restore_failure
 run_scenario scenario_install_incomplete_candidate
 run_scenario scenario_install_reserved_current
+run_scenario scenario_install_concurrent_third_writer
+run_scenario scenario_lock_live_owner_refusal
+run_scenario scenario_lock_stale_owner_recovery
+run_scenario scenario_restore_pre_cas_third_writer
+run_scenario scenario_restore_gnu_fallback_third_writer
 run_scenario scenario_run_success_absolute_path_shadow_payload
 run_scenario scenario_run_success_relative_unchanged
 run_scenario scenario_run_unexpected_default_gnu_fallback
@@ -796,6 +1536,15 @@ run_scenario scenario_run_use_failure_byte_exact_default
 run_scenario scenario_run_restore_failure
 run_scenario scenario_run_incomplete_candidate
 run_scenario scenario_run_reserved_current
+run_scenario scenario_run_concurrent_third_writer
+run_scenario scenario_full_env_success_allows_authorized_default
+run_scenario scenario_full_env_restores_unapproved_defaults
+run_scenario scenario_full_env_concurrent_third_writer
+run_scenario scenario_full_env_malformed_sdkmanrc
+run_scenario scenario_full_env_unsupported_current
+run_scenario scenario_full_env_restore_failure
+run_scenario scenario_full_env_sdk_failure_blocks_payload
+run_scenario scenario_full_env_invalid_authorization
 
 if [[ "$scenario_count" -eq 0 ]]; then
   printf 'Unknown scenario: %s\n' "$scenario_filter" >&2
