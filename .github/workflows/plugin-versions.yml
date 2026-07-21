@@ -10,6 +10,15 @@ permissions:
   contents: read
 
 jobs:
+  sdkman-script-contracts:
+    name: SDKMAN JDK script contracts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Run SDKMAN JDK contract tests
+        run: bash test/sdkman-switch-jdk-contract.sh
+
   verify:
     name: Verify on Node.js ${{ matrix.node-version }}
     runs-on: ubuntu-latest

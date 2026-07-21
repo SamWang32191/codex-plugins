@@ -1,259 +1,314 @@
 ---
 name: sdkman-switch-jdk
-description: Use when Java/JDK version mismatch causes build or test failures, or when user requests switching JDK version on a system with SDKMAN installed
+description: Safely resolve, install, and switch SDKMAN-managed Java/JDK versions without widening scope or changing the default unintentionally. Use when a user asks to switch JDK, project JDK metadata conflicts with the active Java, or a Java version mismatch causes Maven or Gradle build/test failures on a system with SDKMAN installed.
 ---
 
 # SDKMAN 切換 JDK
 
-## 概覽
+採用最小範圍：預設只在執行實際命令的 shell 暫時切換 Java。只有使用者明確要求時，才變更 SDKMAN default、`.sdkmanrc` 或完整專案環境。
 
-使用這個技能以安全且可預期的方式透過 SDKMAN 切換 Java 版本。
-優先選擇影響範圍最小的變更：暫時切換用 `sdk use java`，只有在使用者明確要求永久預設時才用 `sdk default java`。
+## 不變條件
 
-## When to Use
-
-- `java -version` 顯示的版本與專案要求不符
-- 執行 `mvn test` / `gradle build` 失敗，錯誤含 "unsupported class file version"、"invalid source release"、"source/target compatibility"
-- 專案有 `.sdkmanrc` 或 `.java-version` 但當前 Java 版本未匹配
-- 使用者明確要求切換 JDK 版本
-
-**不要用於**：
-
-- 系統沒有安裝 SDKMAN（改為引導安裝）
-- 問題不是 JDK 版本相關（如 Maven/Gradle 設定錯誤、依賴缺失）
-- 只需查看版本不需要切換（直接跑 `java -version`）
-
-## Quick Reference
-
-所有指令前都要加 SDKMAN 初始化前綴（見下方「非互動式 Shell 初始化」）。
-
-| 動作 | 指令 |
-|------|------|
-| 檢查實際使用版本 | `java -version 2>&1` |
-| 確認 java 路徑 | `which java` |
-| 列出已安裝版本 | `ls -1 "${SDKMAN_CANDIDATES_DIR:-${SDKMAN_DIR:-$HOME/.sdkman}/candidates}/java" \| grep -v '^current$'` |
-| 從主版本號找 identifier | `ls ... \| grep '^21\.' \| head -1` |
-| 暫時切換 + 執行 | `sdk use java <id> && <cmd>` |
-| 永久切換 | `sdk default java <id>` |
-| 專案切換（安裝 + 切換） | `sdk env install` |
-| 安裝新版本 | `SDKMAN_AUTO_ANSWER=true sdk install java <id>` |
-
-## 重要：非互動式 Shell 初始化
-
-在非互動式命令執行環境中，SDKMAN 預設不會被載入。
-**每個 bash 命令都必須先 source SDKMAN 初始化腳本**：
-
-```bash
-source "${SDKMAN_DIR:-$HOME/.sdkman}/bin/sdkman-init.sh" && <your command>
-```
-
-後續所有範例皆省略此前綴，但實際執行時**一律需要加上**。
-
-**注意**：SDKMAN 的 `sdk` 指令會輸出 ANSI 色碼（如 `\033[1;32m`），且無法透過環境變數關閉（`sdk()` 函數每次調用都會重新載入 config 覆蓋設定）。這些色碼不影響功能，但**不要 parse `sdk` 指令的輸出文字來判斷版本**——一律用 `java -version` 和 `which java` 驗證。
-
-## 重要：`sdk use` 跨命令失效
-
-`sdk use java <identifier>` 只影響當前 shell session。每次命令執行都可能開新 shell，導致切換失效。
-
-**解法**：在需要特定 JDK 的命令前，一律串接 source 與 `sdk use`：
-
-```bash
-source "${SDKMAN_DIR:-$HOME/.sdkman}/bin/sdkman-init.sh" && sdk use java <identifier> && <actual command>
-```
-
-範例（用 JDK 21 跑 Maven 測試）：
-
-```bash
-source "${SDKMAN_DIR:-$HOME/.sdkman}/bin/sdkman-init.sh" && sdk use java 21.0.9-tem && mvn test
-```
-
-若使用者同意永久切換，則改用 `sdk default java <identifier>`，後續新 shell 會自動使用該版本。
-
-## 切換範圍決策
-
-```dot
-digraph scope {
-  "需要切換 JDK?" -> "專案有 .sdkmanrc?";
-  "專案有 .sdkmanrc?" -> "sdk env install" [label="yes"];
-  "專案有 .sdkmanrc?" -> "使用者要求永久?" [label="no"];
-  "使用者要求永久?" -> "sdk default java <id>" [label="yes"];
-  "使用者要求永久?" -> "sdk use java <id> && <cmd>\n（預設選項）" [label="no"];
-}
-```
+- 先將需求解析成唯一的完整 SDKMAN identifier，再變更環境。
+- 將使用者明確指定的版本置於專案推論之前；衝突時揭露兩者。
+- 將 Java-only 要求限制在 Java，不連帶安裝或切換其他 SDK。
+- 在變更前記錄 default 狀態；除非使用者明確要求，完成後必須完全相同。
+- 將初始化、切換、驗證與實際命令放在同一個 shell。
+- 以 `java -version`、`command -v java` 與實際命令結果作為完成證據。
 
 ## 工作流程
 
-1. 偵測專案所需 JDK 版本（不變更環境）。
-2. 檢查 SDKMAN 與目前 Java 狀態。
-3. 先列出本機已安裝 JDK，必要時再安裝。
-4. 依需求套用切換範圍：暫時、預設或專案層級。
-5. 驗證結果並提供回復命令。
+### 1. 解析 JDK 需求
 
-## 偵測專案所需 JDK 版本
+依下列順序找出需求：
 
-依以下優先順序檢查：
+1. 使用者明確指定的 identifier、主版本或 distribution。
+2. `.sdkmanrc` 的 `java=` 與 `.java-version`。
+3. Gradle Java toolchain、Maven Toolchains 或 Maven Enforcer `requireJavaVersion`。
+4. 專案文件、CI 設定與可重現的 build/test 錯誤。
 
-1. **`.sdkmanrc`** — 讀取 `java=` 值（可能是完整 identifier 如 `21.0.9-tem`，也可能只有主版本號）
-2. **`.java-version`** — 讀取檔案內容取得版本號
-3. **`pom.xml`** — 查看 `<maven.compiler.source>`、`<maven.compiler.target>` 或 `<java.version>` property
-4. **`build.gradle` / `build.gradle.kts`** — 查看 `sourceCompatibility`、`targetCompatibility` 或 `jvmToolchain`
-5. **使用者明確指定**
+當目標需要從 `.sdkmanrc` 解析、需要修改該檔，或需要套用完整 SDKMAN 環境時，先計算其中有效的 `java=` 項目。沒有時繼續找其他證據；只有一個時使用它；超過一個時列出每個衝突並停止，要求使用者選定或授權修正，不得任選其中一筆。若使用者已明確指定一次性的完整 identifier，則回報 `.sdkmanrc` 衝突後仍可使用隔離 runner 繼續，因為該路徑不會套用 auto-env。
 
-讀取 `.sdkmanrc` 中 Java 識別碼：
+將 Maven `source`、`target`、`release` 與 Gradle `sourceCompatibility`、`targetCompatibility` 視為編譯相容性，不直接當作執行 Maven/Gradle 所需的 JDK。將一般性的 `<java.version>` 視為線索，並用 toolchain、文件或錯誤訊息確認其語意。
 
-```bash
-grep '^java=' .sdkmanrc | head -1 | cut -d= -f2-
-```
+若使用者要求一次性 JDK 與專案 metadata 衝突，採用使用者指定值並回報衝突。若要求持久化變更，先說明將修改哪個狀態。
 
-若取得的是**完整 identifier**（如 `21.0.9-tem`），直接使用。
-若取得的是**主版本號**（如 `21`），需從已安裝清單比對完整 identifier：
+**完成條件：**取得一個有來源證據的完整 identifier，或取得仍需解析的唯一主版本與 distribution 約束。
+
+### 2. 初始化並記錄原始狀態
+
+在隔離的 Bash process 中載入 SDKMAN、停用本次初始化的 auto-env、檢查目前 Java，並記錄 `java/current`：
 
 ```bash
-ls -1 "${SDKMAN_CANDIDATES_DIR:-${SDKMAN_DIR:-$HOME/.sdkman}/candidates}/java" | grep -v '^current$' | grep "^21\." | head -1
+bash -c '
+  set -e -o pipefail
+  unset SDKMAN_ENV
+  export SDKMAN_OLD_PWD="$PWD"
+  source "${SDKMAN_DIR:-$HOME/.sdkman}/bin/sdkman-init.sh"
+  sdk version
+  if sdkman_switch_jdk_java="$(command -v java 2>/dev/null)"; then
+    printf "java: %s\n" "$sdkman_switch_jdk_java"
+    if ! java -version 2>&1; then
+      printf "WARNING: active java could not report its version.\n" >&2
+    fi
+  else
+    printf "Active java: absent\n"
+  fi
+  sdkman_switch_jdk_current="${SDKMAN_CANDIDATES_DIR}/java/current"
+  if [[ -L "$sdkman_switch_jdk_current" ]]; then
+    printf "SDKMAN Java default state: link-hex:"
+    LC_ALL=C readlink -n "$sdkman_switch_jdk_current" | \
+      LC_ALL=C od -An -v -tx1 | LC_ALL=C tr -d "[:space:]"
+    printf "\n"
+  elif [[ -e "$sdkman_switch_jdk_current" ]]; then
+    printf "ERROR: current is not a symlink: %s\n" "$sdkman_switch_jdk_current" >&2
+    exit 1
+  else
+    printf "SDKMAN Java default state: absent\n"
+  fi
+'
 ```
 
-若本機沒有匹配的版本，先安裝再使用（見下方「找出或安裝目標 JDK」）。
+將 `SDKMAN Java default state:` 後的完整值逐字保存為 `<previous-default-state>`；值只會是 `link-hex:<raw-readlink-target 的逐 byte 十六進位>` 或 `absent`。編碼避免 shell command substitution 遺失 target 尾端 newline，也讓 state 能安全地作為單一 argv 傳遞。若初始化失敗，停止並說明 SDKMAN 尚未安裝或不可用；取得同意前不安裝 SDKMAN。
 
-## 檢查環境
+**完成條件：**SDKMAN 可用、目前 Java 已觀察、default 已記為完整 symlink target 或 `absent`。
+
+### 3. 解析完整 identifier
+
+列出已安裝版本：
 
 ```bash
-sdk version && java -version 2>&1 && which java
+bash -c '
+  set -e -o pipefail
+  unset SDKMAN_ENV
+  export SDKMAN_OLD_PWD="$PWD"
+  source "${SDKMAN_DIR:-$HOME/.sdkman}/bin/sdkman-init.sh"
+  sdkman_switch_jdk_java_dir="${SDKMAN_CANDIDATES_DIR}/java"
+  if [[ -d "$sdkman_switch_jdk_java_dir" ]]; then
+    find "$sdkman_switch_jdk_java_dir" -mindepth 1 -maxdepth 1 \
+      \( -type d -o -type l \) ! -name current -exec basename {} \; | \
+      LC_ALL=C sort
+  else
+    printf "Installed SDKMAN Java candidates: none\n"
+  fi
+'
 ```
 
-- 若 `source` 失敗或 `sdk` 不可用，先停止並詢問是否要安裝 SDKMAN。
-- **`java -version` 和 `which java` 是真實版本依據**。
-- 注意：`sdk current java` 只顯示 default 版本，不反映 `sdk use` 的效果，**不要用它來驗證切換結果**。
+依以下規則解析：
 
-## 找出或安裝目標 JDK
+- metadata 或使用者已給完整 identifier 時，使用該值。
+- 只有主版本時，先沿用使用者、專案 metadata 或目前 default 明確指出的 distribution。
+- 只有一個符合主版本與 distribution 的已安裝版本時，使用它。
+- 多個版本仍符合時，列出它們並要求選定 distribution 或 patch；不得取清單第一筆。
+- 沒有已安裝版本時，查看 `sdk list java` 並選定一個完整可用 identifier；僅在使用者接受 SDKMAN 預設 distribution 時代為選擇 Temurin。
 
-優先列出本機已安裝的 JDK（低輸出、節省 context）：
+將 `sdk list java` 當作顯示資料；不要用 ANSI 輸出判斷目前生效的 Java。
+
+**完成條件：**只剩一個完整 identifier，例如 `21.0.9-tem`。
+
+### 4. 必要時安全安裝
+
+若 identifier 尚未安裝，執行此 skill 目錄中的安裝 script；將 `<skill-dir>` 解析為包含本檔案的目錄：
 
 ```bash
-ls -1 "${SDKMAN_CANDIDATES_DIR:-${SDKMAN_DIR:-$HOME/.sdkman}/candidates}/java" | grep -v '^current$'
+bash <skill-dir>/scripts/install-java.sh <identifier>
 ```
 
-若本機沒有目標版本，再列出可用的遠端候選版本：
+script 會對 SDKMAN 的 default 提示明確回答 `n`，並驗證安裝前後的 `java/current` 完全相同。不要改寫成 `SDKMAN_AUTO_ANSWER=true sdk install ...`。
+
+**完成條件：**`${SDKMAN_CANDIDATES_DIR}/java/<identifier>` 存在，且 default 狀態與步驟 2 完全相同。
+
+### 5. 套用最小範圍並執行
+
+#### 暫時切換，預設分支
+
+使用此 skill 的 runner 在同一個 Bash process 完成安全初始化、切換、驗證與實際命令。runner 在既有 default 時使用 `sdk use`，接著在所有情況下將精確 candidate 的 `bin` 放到 `PATH` 最前方；default 為 `absent` 時不建立 `java/current`：
 
 ```bash
-sdk list java
+bash <skill-dir>/scripts/run-java.sh <identifier> -- <actual-command>
 ```
 
-安裝目標版本（已安裝的版本會自動跳過，不會報錯）：
+暫時分支必須一律呼叫這個 runner；這是唯一允許的入口。不得以裸 `sdk use`、自行 source 的 subshell 或手動設定 `JAVA_HOME` 取代，因為 runner 同時負責阻止 auto-env、保留 default、處理原本沒有 default 的狀態，以及維持 command argv 邊界。
+
+需要 compound command 時，將它明確交給 Bash，例如 `-- bash -lc 'mvn test && mvn package'`。不要自行拼接或 `eval` 使用者輸入。
+
+#### 永久 default，僅限明確要求
+
+使用步驟 2 保存的 `<previous-default-state>`。將 identifier 與 state 分別作為單一 argv 傳入，不得把 state 當作 SDKMAN identifier，也不得用 `eval`。設定前再次確認 default 沒有漂移，然後保存輸出的 `<created-default-state>`：
 
 ```bash
-SDKMAN_AUTO_ANSWER=true sdk install java <identifier>
+bash -c '
+  set -e -o pipefail
+  unset SDKMAN_ENV
+  export SDKMAN_OLD_PWD="$PWD"
+  source "${SDKMAN_DIR:-$HOME/.sdkman}/bin/sdkman-init.sh"
+  sdkman_switch_jdk_current="${SDKMAN_CANDIDATES_DIR}/java/current"
+  sdkman_switch_jdk_link_state() {
+    printf "link-hex:"
+    LC_ALL=C readlink -n "$1" | LC_ALL=C od -An -v -tx1 | \
+      LC_ALL=C tr -d "[:space:]" || return 1
+    printf "\n"
+  }
+  sdkman_switch_jdk_default_state() {
+    if [[ -L "$sdkman_switch_jdk_current" ]]; then
+      sdkman_switch_jdk_link_state "$sdkman_switch_jdk_current"
+    elif [[ -e "$sdkman_switch_jdk_current" ]]; then
+      printf "unsupported\n"
+    else
+      printf "absent\n"
+    fi
+  }
+  sdkman_switch_jdk_before="$(sdkman_switch_jdk_default_state)"
+  if [[ "$sdkman_switch_jdk_before" != "$2" ]]; then
+    printf "Refusing to change a default that drifted.\nExpected: %s\nActual:   %s\n" \
+      "$2" "$sdkman_switch_jdk_before" >&2
+    exit 1
+  fi
+  sdk default java "$1"
+  sdkman_switch_jdk_created="$(sdkman_switch_jdk_default_state)"
+  if [[ "$sdkman_switch_jdk_created" != link-hex:* ]]; then
+    printf "SDKMAN did not create a Java default symlink.\n" >&2
+    exit 1
+  fi
+  printf "Created default state: %s\n" "$sdkman_switch_jdk_created"
+' bash <identifier> <previous-default-state>
+
+bash -c '
+  set -e -o pipefail
+  unset SDKMAN_ENV
+  export SDKMAN_OLD_PWD="$PWD"
+  source "${SDKMAN_DIR:-$HOME/.sdkman}/bin/sdkman-init.sh"
+  java -version 2>&1
+  command -v java
+'
 ```
 
-`SDKMAN_AUTO_ANSWER=true` 防止非互動式 shell 卡在 "Set as default?" 提示。
-識別碼格式範例：`21.0.9-tem`。
-
-**簡化策略**：因為 `sdk install` 對已安裝版本無害（輸出 "already installed" 並正常結束），可以無條件先 install 再 use，不需要先檢查是否已安裝。
-
-## 套用要求的範圍
-
-### 暫時（僅目前 shell）— 預設選項
-
-當使用者要求測試或暫時切換時使用。**注意搭配實際命令串接**：
+只在使用者要求回復時執行以下命令。它先要求目前 state 逐字等於 `<created-default-state>`，避免覆蓋後續變更；原本有 default 時，以 `java` 目錄內的暫存 symlink 原子還原 raw target，原本為 `absent` 時則移除本次建立的 symlink。兩個 state 都必須分別作為單一 argv 傳入：
 
 ```bash
-sdk use java <identifier> && <actual command>
+bash -c '
+  set -e -o pipefail
+  unset SDKMAN_ENV
+  export SDKMAN_OLD_PWD="$PWD"
+  source "${SDKMAN_DIR:-$HOME/.sdkman}/bin/sdkman-init.sh"
+  sdkman_switch_jdk_java_dir="${SDKMAN_CANDIDATES_DIR}/java"
+  sdkman_switch_jdk_current="${SDKMAN_CANDIDATES_DIR}/java/current"
+  sdkman_switch_jdk_link_state() {
+    printf "link-hex:"
+    LC_ALL=C readlink -n "$1" | LC_ALL=C od -An -v -tx1 | \
+      LC_ALL=C tr -d "[:space:]" || return 1
+    printf "\n"
+  }
+  sdkman_switch_jdk_default_state() {
+    if [[ -L "$sdkman_switch_jdk_current" ]]; then
+      sdkman_switch_jdk_link_state "$sdkman_switch_jdk_current"
+    elif [[ -e "$sdkman_switch_jdk_current" ]]; then
+      printf "unsupported\n"
+    else
+      printf "absent\n"
+    fi
+  }
+  sdkman_switch_jdk_decode_link_state() {
+    local sdkman_switch_jdk_encoded="${1#link-hex:}"
+    local sdkman_switch_jdk_escaped=""
+    if [[ "$1" != link-hex:* || -z "$sdkman_switch_jdk_encoded" || \
+          $(( ${#sdkman_switch_jdk_encoded} % 2 )) -ne 0 || \
+          ! "$sdkman_switch_jdk_encoded" =~ ^[[:xdigit:]]+$ ]]; then
+      return 1
+    fi
+    while [[ -n "$sdkman_switch_jdk_encoded" ]]; do
+      sdkman_switch_jdk_escaped="${sdkman_switch_jdk_escaped}\\x${sdkman_switch_jdk_encoded:0:2}"
+      sdkman_switch_jdk_encoded="${sdkman_switch_jdk_encoded:2}"
+    done
+    printf -v sdkman_switch_jdk_decoded_target "%b" \
+      "$sdkman_switch_jdk_escaped"
+  }
+  sdkman_switch_jdk_expected="$1"
+  sdkman_switch_jdk_previous="$2"
+  if [[ "$sdkman_switch_jdk_expected" != link-hex:* ]] || \
+     [[ "$sdkman_switch_jdk_previous" != link-hex:* && \
+        "$sdkman_switch_jdk_previous" != absent ]]; then
+    printf "Invalid saved default state.\n" >&2
+    exit 2
+  fi
+  sdkman_switch_jdk_actual="$(sdkman_switch_jdk_default_state)"
+  if [[ "$sdkman_switch_jdk_actual" != "$sdkman_switch_jdk_expected" ]]; then
+    printf "Refusing to overwrite a default that drifted.\nExpected: %s\nActual:   %s\n" \
+      "$sdkman_switch_jdk_expected" "$sdkman_switch_jdk_actual" >&2
+    exit 1
+  fi
+  if [[ "$sdkman_switch_jdk_previous" == absent ]]; then
+    unlink "$sdkman_switch_jdk_current"
+  else
+    if ! sdkman_switch_jdk_decode_link_state "$sdkman_switch_jdk_previous"; then
+      printf "Invalid encoded previous default state.\n" >&2
+      exit 2
+    fi
+    sdkman_switch_jdk_previous_target="$sdkman_switch_jdk_decoded_target"
+    sdkman_switch_jdk_temp_dir="$(
+      mktemp -d "$sdkman_switch_jdk_java_dir/.sdkman-switch-jdk-restore.XXXXXX"
+    )"
+    sdkman_switch_jdk_temp_link="$sdkman_switch_jdk_temp_dir/current"
+    sdkman_switch_jdk_cleanup() {
+      if [[ -L "${sdkman_switch_jdk_temp_link:-}" ]]; then
+        unlink "$sdkman_switch_jdk_temp_link" 2>/dev/null || true
+      fi
+      if [[ -d "${sdkman_switch_jdk_temp_dir:-}" ]]; then
+        rmdir "$sdkman_switch_jdk_temp_dir" 2>/dev/null || true
+      fi
+    }
+    trap sdkman_switch_jdk_cleanup EXIT
+    ln -s -- "$sdkman_switch_jdk_previous_target" "$sdkman_switch_jdk_temp_link"
+    if [[ ! -L "$sdkman_switch_jdk_temp_link" ]] || \
+       [[ "$(sdkman_switch_jdk_link_state "$sdkman_switch_jdk_temp_link")" != \
+          "$sdkman_switch_jdk_previous" ]]; then
+      printf "Could not create the exact rollback symlink.\n" >&2
+      exit 1
+    fi
+    if [[ "$(sdkman_switch_jdk_default_state)" != \
+          "$sdkman_switch_jdk_expected" ]]; then
+      printf "Refusing to overwrite a default that drifted during rollback.\n" >&2
+      exit 1
+    fi
+    if mv -fh "$sdkman_switch_jdk_temp_link" \
+         "$sdkman_switch_jdk_current" 2>/dev/null; then
+      :
+    elif [[ -L "$sdkman_switch_jdk_temp_link" ]] && \
+         mv -Tf "$sdkman_switch_jdk_temp_link" \
+           "$sdkman_switch_jdk_current" 2>/dev/null; then
+      :
+    else
+      printf "Could not atomically restore the Java default.\n" >&2
+      exit 1
+    fi
+    rmdir "$sdkman_switch_jdk_temp_dir"
+    sdkman_switch_jdk_temp_dir=
+    sdkman_switch_jdk_temp_link=
+    trap - EXIT
+  fi
+  sdkman_switch_jdk_actual="$(sdkman_switch_jdk_default_state)"
+  if [[ "$sdkman_switch_jdk_actual" != "$sdkman_switch_jdk_previous" ]]; then
+    printf "Java default rollback verification failed.\nExpected: %s\nActual:   %s\n" \
+      "$sdkman_switch_jdk_previous" "$sdkman_switch_jdk_actual" >&2
+    exit 1
+  fi
+  printf "Restored default state: %s\n" "$sdkman_switch_jdk_actual"
+' bash <created-default-state> <previous-default-state>
 ```
 
-效果會在目前 shell 結束後失效。
+#### 專案或完整環境
 
-### 永久預設（新 shell）
+當使用者明確要求修改 `.sdkmanrc`，或要求套用其中所有 SDK 時，讀取 [project-scope.md](references/project-scope.md)。一般 Java-only 要求留在暫時分支。
 
-只有在使用者明確要求全域或預設 JDK 時才使用：
+**完成條件：**同一 shell 中的版本、路徑與完整 identifier 相符，且使用者要求的 build/test/command 成功；任何持久化狀態都有具體回復方式。
 
-```bash
-sdk default java <identifier>
-```
+### 6. 回報結果
 
-效果會套用到所有新開的 shell。
+回報以下證據：
 
-### 專案層級（`.sdkmanrc`）
+1. 選用的完整 identifier 與來源。
+2. 套用範圍：暫時、default、`.sdkmanrc` 或完整專案環境。
+3. `java -version`、`command -v java` 與實際命令結果。
+4. 任何持久化變更及其具體回復命令。
 
-在專案根目錄執行（僅 `.sdkmanrc` 不存在時）：
-
-```bash
-sdk use java <identifier> && sdk env init
-```
-
-這會將目前版本寫入 `.sdkmanrc`。
-
-若 `.sdkmanrc` **已存在**，不要執行 `sdk env init`（會報錯），改為只更新 `java=` 行並保留其他設定：
-
-```bash
-cp .sdkmanrc .sdkmanrc.bak
-# 只更新 java= 行，保留 .sdkmanrc 中的其他候選設定（如 maven=、gradle= 等）
-awk -v id="<identifier>" 'BEGIN{updated=0} /^java=/{print "java=" id; updated=1; next} {print} END{if(!updated) print "java=" id}' .sdkmanrc > .sdkmanrc.tmp && mv .sdkmanrc.tmp .sdkmanrc
-```
-
-之後可用以下命令安裝（若缺少）並啟用專案版本：
-
-```bash
-sdk env install
-```
-
-注意 `sdk env` 和 `sdk env install` 的區別：
-- `sdk env` → 切換到 `.sdkmanrc` 指定的版本，**若版本未安裝只會警告**
-- `sdk env install` → **自動安裝**缺少的版本並切換（推薦使用）
-
-## 驗證與回復
-
-驗證（不要用 `sdk current java`，它只顯示 default 不反映 `sdk use`）：
-
-```bash
-java -version 2>&1 && which java
-```
-
-預期 `which java` 應指向 `$HOME/.sdkman/candidates/java/<identifier>/bin/java`。
-
-依切換範圍回復：
-
-```bash
-# temporary — 下次命令不串接 sdk use 即可恢復 default
-
-# default
-sdk default java <previous-identifier>
-
-# project-level（若有備份）
-[ -f .sdkmanrc.bak ] && mv .sdkmanrc.bak .sdkmanrc
-sdk env install
-```
-
-## 備援：直接設定 JAVA_HOME
-
-若 `sdk use` 無法生效（例如某些工具不走 PATH 而直接讀 `JAVA_HOME`），可直接導出：
-
-```bash
-export JAVA_HOME="${SDKMAN_DIR:-$HOME/.sdkman}/candidates/java/<identifier>"
-export PATH="$JAVA_HOME/bin:$PATH"
-```
-
-或使用 SDKMAN 的 `current` symlink（指向 default 版本）：
-
-```bash
-export JAVA_HOME="$HOME/.sdkman/candidates/java/current"
-export PATH="$JAVA_HOME/bin:$PATH"
-```
-
-## 常見錯誤處理
-
-| 錯誤訊息 | 原因 | 解法 |
-| --- | --- | --- |
-| `sdk: command not found` | SDKMAN 未初始化 | 確認 `source` 初始化腳本有在命令前執行 |
-| `Stop! <id> is not available.` | 版本識別碼錯誤 | 用 `sdk list java` 重新確認正確的識別碼 |
-| `java -version` 與預期不符 | `PATH` 中有其他 Java（如 `/usr/bin/java`） | 檢查 `which java` 確認路徑，移除或調整衝突的 PATH 項目 |
-| `sdk env init` 失敗 | `.sdkmanrc` 已存在 | 用 `awk` 只更新 `java=` 行，避免覆蓋其他候選設定 |
-| Shell 卡住無回應 | `sdk install` 等待 "Set as default?" 互動式提示 | 加 `SDKMAN_AUTO_ANSWER=true` 環境變數 |
-| 輸出含亂碼或色碼 | SDKMAN `sdk` 指令輸出帶 ANSI escape code | 不影響功能，不要 parse `sdk` 輸出來判斷版本，一律用 `java -version` 和 `which java` 驗證 |
-
-## 回覆格式
-
-回覆時請一律：
-
-1. 說明選擇的範圍：暫時、預設或專案層級。
-2. 提供包含具體識別碼的精確命令（含 `source` 前綴）。
-3. 附上驗證命令。
-4. 若更改預設值，附上回復命令。
+核心流程失敗時才讀取 [troubleshooting.md](references/troubleshooting.md)，並在替代路徑上重新滿足相同完成條件。
