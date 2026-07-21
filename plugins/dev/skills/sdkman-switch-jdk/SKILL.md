@@ -27,7 +27,7 @@ description: Safely resolve, install, and switch SDKMAN-managed Java/JDK version
 3. Gradle Java toolchain、Maven Toolchains 或 Maven Enforcer `requireJavaVersion`。
 4. 專案文件、CI 設定與可重現的 build/test 錯誤。
 
-當目標需要從 `.sdkmanrc` 解析、需要修改該檔，或需要完整 `sdk env install` 時，先計算其中有效的 `java=` 項目。沒有時繼續找其他證據；只有一個時使用它；超過一個時列出每個衝突並停止，要求使用者選定或授權修正，不得任選其中一筆。若使用者已明確指定一次性的完整 identifier，則回報 `.sdkmanrc` 衝突後仍可使用隔離 runner 繼續，因為該路徑不會套用 auto-env。
+當目標需要從 `.sdkmanrc` 解析、需要修改該檔，或需要套用完整 SDKMAN 環境時，先計算其中有效的 `java=` 項目。沒有時繼續找其他證據；只有一個時使用它；超過一個時列出每個衝突並停止，要求使用者選定或授權修正，不得任選其中一筆。若使用者已明確指定一次性的完整 identifier，則回報 `.sdkmanrc` 衝突後仍可使用隔離 runner 繼續，因為該路徑不會套用 auto-env。
 
 將 Maven `source`、`target`、`release` 與 Gradle `sourceCompatibility`、`targetCompatibility` 視為編譯相容性，不直接當作執行 Maven/Gradle 所需的 JDK。將一般性的 `<java.version>` 視為線索，並用 toolchain、文件或錯誤訊息確認其語意。
 

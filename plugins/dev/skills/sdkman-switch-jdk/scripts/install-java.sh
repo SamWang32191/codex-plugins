@@ -55,10 +55,10 @@ sdkman_switch_jdk_java_dir="${SDKMAN_CANDIDATES_DIR:?SDKMAN_CANDIDATES_DIR is no
 sdkman_switch_jdk_current="$sdkman_switch_jdk_java_dir/current"
 sdkman_switch_jdk_target="$sdkman_switch_jdk_java_dir/$sdkman_switch_jdk_identifier"
 
+sdkman_switch_jdk_install_cleanup_traps
 if ! sdkman_switch_jdk_acquire_lock install-java; then
   exit 1
 fi
-sdkman_switch_jdk_install_cleanup_traps
 
 sdkman_switch_jdk_default_before="$(sdkman_switch_jdk_default_state "$sdkman_switch_jdk_current")"
 if [[ "$sdkman_switch_jdk_default_before" == "unsupported" ]]; then
@@ -77,6 +77,12 @@ if [[ -e "$sdkman_switch_jdk_target" || -L "$sdkman_switch_jdk_target" ]]; then
   sdkman_switch_jdk_install_status=0
 else
   sdkman_switch_jdk_owned_state="$(sdkman_switch_jdk_target_state "$sdkman_switch_jdk_identifier")"
+  if ! sdkman_switch_jdk_register_default_reconciliation \
+      "$sdkman_switch_jdk_current" \
+      "$sdkman_switch_jdk_default_before" \
+      "$sdkman_switch_jdk_owned_state"; then
+    exit 1
+  fi
   # Pre-seeding USE covers both SDKMAN auto-answer modes and the no-default case.
   # The here-string supplies the same explicit answer when SDKMAN prompts.
   set +e
@@ -85,33 +91,26 @@ else
   set -e
 fi
 
-sdkman_switch_jdk_default_after="$(sdkman_switch_jdk_default_state "$sdkman_switch_jdk_current")"
-sdkman_switch_jdk_default_changed=0
+set +e
+sdkman_switch_jdk_finish_operation "$sdkman_switch_jdk_install_status"
+sdkman_switch_jdk_finish_status=$?
+set -e
 
-if [[ "$sdkman_switch_jdk_default_after" != "$sdkman_switch_jdk_default_before" ]]; then
-  sdkman_switch_jdk_default_changed=1
-  if ! sdkman_switch_jdk_restore_default \
-      "$sdkman_switch_jdk_current" \
-      "$sdkman_switch_jdk_default_before" \
-      "$sdkman_switch_jdk_owned_state"; then
-    printf 'SDKMAN changed the Java default unexpectedly and automatic restoration failed.\n' >&2
-    exit 1
-  fi
+if (( sdkman_switch_jdk_deferred_signal_status != 0 )); then
+  exit "$sdkman_switch_jdk_finish_status"
+fi
+if (( sdkman_switch_jdk_default_reconcile_failed != 0 )) || \
+   (( sdkman_switch_jdk_finish_status != sdkman_switch_jdk_install_status )); then
+  exit 1
 fi
 
 if (( sdkman_switch_jdk_install_status != 0 )); then
-  if ! sdkman_switch_jdk_release_lock; then
-    exit 1
-  fi
   printf 'SDKMAN failed to install Java %s (status %d); the default is unchanged.\n' \
     "$sdkman_switch_jdk_identifier" "$sdkman_switch_jdk_install_status" >&2
   exit "$sdkman_switch_jdk_install_status"
 fi
 
-if (( sdkman_switch_jdk_default_changed != 0 )); then
-  if ! sdkman_switch_jdk_release_lock; then
-    exit 1
-  fi
+if (( sdkman_switch_jdk_default_reconcile_changed != 0 )); then
   printf 'SDKMAN changed the Java default unexpectedly; the previous state was restored.\n' >&2
   exit 1
 fi
@@ -119,10 +118,6 @@ fi
 if [[ ! -x "$sdkman_switch_jdk_target/bin/java" ]]; then
   printf 'SDKMAN reported success but Java is incomplete or not executable at: %s\n' \
     "$sdkman_switch_jdk_target" >&2
-  exit 1
-fi
-
-if ! sdkman_switch_jdk_release_lock; then
   exit 1
 fi
 

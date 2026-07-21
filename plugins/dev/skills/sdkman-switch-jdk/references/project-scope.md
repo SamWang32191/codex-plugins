@@ -36,11 +36,11 @@
 
 ## 套用完整 SDKMAN 環境
 
-只有在使用者明確要求 `.sdkmanrc` 的每個 candidate 時，才使用 `sdk env install`。先通過 `SKILL.md` 步驟 1 的重複 `java=` gate；有衝突時不得進入本分支。
+只有在使用者明確要求套用 `.sdkmanrc` 的每個 candidate 時，才進入完整環境分支。先通過 `SKILL.md` 步驟 1 的重複 `java=` gate；有衝突時不得進入本分支。
 
 必須從包含 `.sdkmanrc` 的目錄執行專用 runner。不要自行 source SDKMAN 後直接執行 `sdk env install`，因為該 inline 流程無法在 payload 前逐 candidate 驗證與還原 default。
 
-runner 會先解析 `.sdkmanrc`、在共用跨程序 lock 內記錄每個 candidate 的 raw `current` symlink，再執行 `sdk env install`。未獲准的變更只有在 current 仍精確等於該 candidate 的 `.sdkmanrc` version 時才會原子還原；若有第三方漂移、比較失敗、還原失敗或 lock ownership 改變，runner 會保留較新的狀態並禁止 payload。
+runner 會以一次讀取解析並驗證 `.sdkmanrc`，把 candidate 與 version 保留在 indexed arrays；接著只以這些記憶體值明確呼叫 `sdk install <candidate> <version>` 與 `sdk use <candidate> <version>`，不會呼叫 `sdk env install` 或讓 SDKMAN 第二次讀取 `.sdkmanrc`。在共用跨程序 lock 內，runner 會記錄每個已驗證 candidate 的 raw `current` symlink。未獲准的變更只有在 current 仍精確等於該 candidate 的已驗證 version 時才會原子還原；若 fingerprint 顯示 project `.sdkmanrc` 在讀取或執行期間改變、有第三方漂移、比較失敗、還原失敗或 lock ownership 改變，runner 會保留外部的新狀態並禁止 payload。
 
 SDKMAN 可能為原本沒有 `current` 的 candidate 建立第一個 default。逐項說明這些 candidate，並只在使用者明確同意保留該 candidate 的 `.sdkmanrc` version 時加入對應授權：
 
@@ -54,6 +54,6 @@ bash <skill-dir>/scripts/run-sdkman-env.sh \
 
 需要 compound command 時，將 `bash -lc 'mvn test && mvn package'` 當成 `<actual-command> [args...]` 傳入；不要把命令文字插入 `bash -c` 程式本文。
 
-runner 只在所有 candidate 的比較、還原、最終驗證與 lock release 都成功後才以 `exec` 執行 payload。SDKMAN 失敗且安全 reconciliation 成功時，保留 SDKMAN 的原始非零 status；CLI 或 `.sdkmanrc` 格式錯誤回傳 `2`，其他安全拒絕回傳 `1`。
+runner 只在所有 candidate 的比較、還原、最終驗證與 lock release 都成功後才以 `exec` 執行 payload。執行 SDKMAN 期間若收到 `HUP`、`INT` 或 `TERM`，會先以相同的 operation-owned 比較完成 reconciliation，再保留對應 signal status；lock metadata 初始化期間的 signal 也會延後到安全清理後處理。SDKMAN 失敗且安全 reconciliation 成功時，保留 SDKMAN 的原始非零 status；CLI 或 `.sdkmanrc` 格式錯誤回傳 `2`，其他安全拒絕回傳 `1`。
 
 **完成條件：**回報 SDKMAN 安裝或切換的每個 candidate、明確授權的新 default、實際命令結果，且所有未獲准變更的 default symlink 與執行前逐 byte 相同。

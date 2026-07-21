@@ -65,10 +65,10 @@ if [[ ! -x "$sdkman_switch_jdk_run_target/bin/java" ]]; then
   exit 1
 fi
 
+sdkman_switch_jdk_install_cleanup_traps
 if ! sdkman_switch_jdk_acquire_lock run-java; then
   exit 1
 fi
-sdkman_switch_jdk_install_cleanup_traps
 
 sdkman_switch_jdk_run_default_before="$(sdkman_switch_jdk_default_state "$sdkman_switch_jdk_run_current")"
 if [[ "$sdkman_switch_jdk_run_default_before" == "unsupported" ]]; then
@@ -81,6 +81,12 @@ sdkman_switch_jdk_run_use_status=0
 sdkman_switch_jdk_run_owned_state=''
 if [[ "$sdkman_switch_jdk_run_default_before" == link-hex:* ]]; then
   sdkman_switch_jdk_run_owned_state="$(sdkman_switch_jdk_target_state "$sdkman_switch_jdk_run_identifier")"
+  if ! sdkman_switch_jdk_register_default_reconciliation \
+      "$sdkman_switch_jdk_run_current" \
+      "$sdkman_switch_jdk_run_default_before" \
+      "$sdkman_switch_jdk_run_owned_state"; then
+    exit 1
+  fi
   set +e
   sdk use java "$sdkman_switch_jdk_run_identifier"
   sdkman_switch_jdk_run_use_status=$?
@@ -89,37 +95,27 @@ else
   :
 fi
 
-sdkman_switch_jdk_run_default_after="$(sdkman_switch_jdk_default_state "$sdkman_switch_jdk_run_current")"
-sdkman_switch_jdk_run_default_changed=0
-if [[ "$sdkman_switch_jdk_run_default_after" != "$sdkman_switch_jdk_run_default_before" ]]; then
-  sdkman_switch_jdk_run_default_changed=1
-  if ! sdkman_switch_jdk_restore_default \
-      "$sdkman_switch_jdk_run_current" \
-      "$sdkman_switch_jdk_run_default_before" \
-      "$sdkman_switch_jdk_run_owned_state"; then
-    printf 'SDKMAN changed the Java default unexpectedly and automatic restoration failed.\n' >&2
-    exit 1
-  fi
+set +e
+sdkman_switch_jdk_finish_operation "$sdkman_switch_jdk_run_use_status"
+sdkman_switch_jdk_run_finish_status=$?
+set -e
+
+if (( sdkman_switch_jdk_deferred_signal_status != 0 )); then
+  exit "$sdkman_switch_jdk_run_finish_status"
+fi
+if (( sdkman_switch_jdk_default_reconcile_failed != 0 )) || \
+   (( sdkman_switch_jdk_run_finish_status != sdkman_switch_jdk_run_use_status )); then
+  exit 1
 fi
 
 if (( sdkman_switch_jdk_run_use_status != 0 )); then
-  if ! sdkman_switch_jdk_release_lock; then
-    exit 1
-  fi
   printf 'SDKMAN failed to activate Java %s (status %d); the command was not run.\n' \
     "$sdkman_switch_jdk_run_identifier" "$sdkman_switch_jdk_run_use_status" >&2
   exit "$sdkman_switch_jdk_run_use_status"
 fi
 
-if (( sdkman_switch_jdk_run_default_changed != 0 )); then
-  if ! sdkman_switch_jdk_release_lock; then
-    exit 1
-  fi
+if (( sdkman_switch_jdk_default_reconcile_changed != 0 )); then
   printf 'SDKMAN changed the Java default unexpectedly; it was restored and the command was not run.\n' >&2
-  exit 1
-fi
-
-if ! sdkman_switch_jdk_release_lock; then
   exit 1
 fi
 
@@ -140,4 +136,5 @@ fi
 
 java -version >&2
 printf 'java: %s\n' "$sdkman_switch_jdk_run_java" >&2
+sdkman_switch_jdk_clear_cleanup_traps
 exec "$@"
