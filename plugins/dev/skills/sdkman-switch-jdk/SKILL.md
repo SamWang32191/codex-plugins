@@ -1,6 +1,6 @@
 ---
 name: sdkman-switch-jdk
-description: Safely resolve, install, and switch SDKMAN-managed Java/JDK versions without widening scope or changing the default unintentionally. Use when a user asks to switch JDK, project JDK metadata conflicts with the active Java, or a Java version mismatch causes Maven or Gradle build/test failures on a system with SDKMAN installed.
+description: Always use for any Java/JDK version issue, including selecting, finding, installing, or switching a JDK; Java version mismatches or compatibility errors; JAVA_HOME or toolchain conflicts; and Maven, Gradle, project, CI, or local-runtime JDK differences. Resolve the required JDK safely with SDKMAN without unintentionally changing the default, even when SDKMAN availability is not yet confirmed.
 ---
 
 # SDKMAN 切換 JDK
