@@ -1,0 +1,5 @@
+interface:
+  display_name: "Bump New Version"
+  short_description: "Bump New Version"
+policy:
+  allow_implicit_invocation: false
