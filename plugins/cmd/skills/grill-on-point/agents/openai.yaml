@@ -1,0 +1,8 @@
+interface:
+  display_name: "Grill On Point"
+  short_description: "Grill On Point"
+  icon_small: "./assets/icon.svg"
+  icon_large: "./assets/icon.svg"
+  brand_color: "#0EA5E9"
+policy:
+  allow_implicit_invocation: false
