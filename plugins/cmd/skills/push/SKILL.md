@@ -1,6 +1,6 @@
 ---
 name: push
-description:  Push current branch to origin
+description:  Push
 ---
 
 

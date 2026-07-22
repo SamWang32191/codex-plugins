@@ -1,6 +1,6 @@
 ---
 name: commit-push
-description: Commit and push
+description: Commit Push
 ---
 
 ## Context

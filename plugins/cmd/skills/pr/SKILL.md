@@ -1,6 +1,6 @@
 ---
 name: pr
-description:  Open a PR for the current branch
+description:  PR
 ---
 
 ## Context

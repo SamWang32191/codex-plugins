@@ -1,6 +1,6 @@
 ---
 name: create-branch
-description:  Create a git branch
+description:  Create Branch
 ---
 
 ## Context

@@ -1,6 +1,6 @@
 ---
 name: commit
-description: Create a git commit
+description: Commit
 ---
 
 ## Context
