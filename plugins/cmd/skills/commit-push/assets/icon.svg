@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">Commit and push</title>
+  <desc id="desc">A bright blue icon that combines a commit node with an upward push arrow.</desc>
+  <defs>
+    <linearGradient id="blue" x1="10" y1="6" x2="54" y2="58" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#38BDF8"/>
+      <stop offset="1" stop-color="#0284C7"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="56" height="56" rx="16" fill="url(#blue)"/>
+  <rect x="8" y="8" width="48" height="20" rx="12" fill="#FFFFFF" fill-opacity=".13"/>
+  <g fill="none" stroke="#082F49" stroke-linecap="round" stroke-linejoin="round" stroke-width="4.5">
+    <path d="M16 41h6M30 41h5"/>
+    <circle cx="26" cy="41" r="4" fill="#0EA5E9"/>
+    <path d="M43 46V20"/>
+    <path d="m35 28 8-8 8 8"/>
+  </g>
+</svg>

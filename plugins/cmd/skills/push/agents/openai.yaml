@@ -1,5 +1,9 @@
 interface:
   display_name: "Push"
   short_description: "Push current branch to origin"
+  icon_small: "./assets/icon.svg"
+  icon_large: "./assets/icon.svg"
+  brand_color: "#0EA5E9"
+  default_prompt: "Use $push to push the current branch to origin."
 policy:
   allow_implicit_invocation: false

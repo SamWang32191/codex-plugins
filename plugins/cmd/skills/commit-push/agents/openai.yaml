@@ -1,5 +1,9 @@
 interface:
   display_name: "Commit Push"
-  short_description: "Commit and push"
+  short_description: "Commit changes and push the branch"
+  icon_small: "./assets/icon.svg"
+  icon_large: "./assets/icon.svg"
+  brand_color: "#0EA5E9"
+  default_prompt: "Use $commit-push to commit the current changes and push the branch."
 policy:
   allow_implicit_invocation: false

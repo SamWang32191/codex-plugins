@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">Git push</title>
+  <desc id="desc">A bright blue icon with an upward arrow for pushing a branch.</desc>
+  <defs>
+    <linearGradient id="blue" x1="10" y1="6" x2="54" y2="58" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#38BDF8"/>
+      <stop offset="1" stop-color="#0284C7"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="56" height="56" rx="16" fill="url(#blue)"/>
+  <rect x="8" y="8" width="48" height="20" rx="12" fill="#FFFFFF" fill-opacity=".13"/>
+  <g fill="none" stroke="#082F49" stroke-linecap="round" stroke-linejoin="round" stroke-width="4.5">
+    <path d="M32 46V18"/>
+    <path d="m21 29 11-11 11 11"/>
+    <path d="M18 46h28" stroke-opacity=".72"/>
+  </g>
+</svg>

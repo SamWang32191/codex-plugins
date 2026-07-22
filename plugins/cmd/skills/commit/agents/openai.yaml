@@ -1,5 +1,9 @@
 interface:
   display_name: "Commit"
-  short_description: "Commit"
+  short_description: "Create a focused git commit"
+  icon_small: "./assets/icon.svg"
+  icon_large: "./assets/icon.svg"
+  brand_color: "#0EA5E9"
+  default_prompt: "Use $commit to create a focused commit for the current changes."
 policy:
   allow_implicit_invocation: false

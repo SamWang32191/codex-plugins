@@ -1,5 +1,9 @@
 interface:
   display_name: "Commit Push PR"
-  short_description: "Commit , push and PR"
+  short_description: "Commit, push, and open a pull request"
+  icon_small: "./assets/icon.svg"
+  icon_large: "./assets/icon.svg"
+  brand_color: "#0EA5E9"
+  default_prompt: "Use $commit-push-pr to commit the current changes, push a branch, and open a pull request."
 policy:
   allow_implicit_invocation: false
