@@ -1,6 +1,6 @@
 {
   "name": "cmd",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Prompt-based wrapper commands for explicit agent workflows in Codex.",
   "author": {
     "name": "Sam Wang",
