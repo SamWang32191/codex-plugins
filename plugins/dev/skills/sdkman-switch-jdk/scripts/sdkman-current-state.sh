@@ -337,9 +337,17 @@ sdkman_switch_jdk_acquire_lock() {
       sdkman_switch_jdk_exit_with_cleanup \
         "$sdkman_switch_jdk_deferred_signal_status"
     fi
-    if [[ ! -d "$sdkman_switch_jdk_lock_dir" || -L "$sdkman_switch_jdk_lock_dir" ]]; then
-      printf 'SDKMAN default-state lock path is not a directory: %s\n' \
+    if [[ -L "$sdkman_switch_jdk_lock_dir" || \
+          ( -e "$sdkman_switch_jdk_lock_dir" && \
+            ! -d "$sdkman_switch_jdk_lock_dir" ) ]]; then
+      printf 'SDKMAN default-state lock path is unsafe: %s\n' \
         "$sdkman_switch_jdk_lock_dir" >&2
+      return 1
+    fi
+    if [[ ! -d "$sdkman_switch_jdk_lock_dir" ]]; then
+      printf 'Could not create the SDKMAN default-state lock: %s\n' \
+        "$sdkman_switch_jdk_lock_dir" >&2
+      printf 'The path was absent when checked; verify that its parent exists and is writable.\n' >&2
       return 1
     fi
     if ! sdkman_switch_jdk_snapshot_lock "$sdkman_switch_jdk_lock_dir"; then
