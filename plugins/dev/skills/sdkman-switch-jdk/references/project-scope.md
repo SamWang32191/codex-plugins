@@ -8,7 +8,7 @@
 
 1. 從 `.sdkmanrc` 讀出完整 `java=` identifier。
 2. 必要時用 `scripts/install-java.sh` 只安裝該 Java。
-3. 回到 `SKILL.md` 步驟 5 的暫時分支；default 不存在時使用其中指向的 SDK home 分支。
+3. 回到 `SKILL.md` 步驟 3 的無狀態暫時分支。
 
 此分支不執行 `sdk env install`，因為它會安裝並切換 `.sdkmanrc` 中的每一個 candidate。
 
@@ -28,7 +28,7 @@
 
 2. 修改前計算有效的 `java=` 項目。沒有時新增 `java=<identifier>`；只有一個時更新該項並保留註解與其他 candidate。若超過一個，停止並列出衝突；只有在使用者明確要求修正重複項目時，才能更新第一項並移除其餘項目。
 3. 修改後驗證恰好只有一個有效的 `java=` 項目，再檢查 diff，確認只包含預期的 Java 項目變更。
-4. 必要時用 `scripts/install-java.sh` 安裝該 Java，再回到 `SKILL.md` 步驟 5 的暫時分支執行與驗證。
+4. 必要時用 `scripts/install-java.sh` 安裝該 Java，再回到 `SKILL.md` 步驟 3 的無狀態暫時分支執行與驗證。
 
 回復時，既有檔案應還原為保存的完整內容；若本次建立了新檔，先確認它仍是本次產物，再依使用者要求執行 `unlink .sdkmanrc`。不要使用會覆寫既有內容的固定 `.sdkmanrc.bak`。
 
@@ -52,7 +52,7 @@ bash <skill-dir>/scripts/run-sdkman-env.sh \
 
 `--allow-default` 只適用於執行前為 `absent`、且存在於 `.sdkmanrc` 的 candidate；它只允許保留 `.sdkmanrc` 指定的 exact raw version target。它不允許改寫既有 default，也不接受重複或未列於 `.sdkmanrc` 的 candidate。沒有任何建立 default 的授權時，省略所有 `--allow-default`，runner 會還原每一個新建的 default。
 
-需要 compound command 時，將 `bash -lc 'mvn test && mvn package'` 當成 `<actual-command> [args...]` 傳入；不要把命令文字插入 `bash -c` 程式本文。
+需要 compound command 時，將 `bash -c 'mvn test && mvn package'` 當成 `<actual-command> [args...]` 傳入。不要使用 `bash -lc`；login shell 可能重新讀取 profile 並覆寫 runner 選定的 SDKMAN 環境。不要拼接或 `eval` 使用者輸入。
 
 runner 只在所有 candidate 的比較、還原、最終驗證與 lock release 都成功後才以 `exec` 執行 payload。執行 SDKMAN 期間若收到 `HUP`、`INT` 或 `TERM`，會先以相同的 operation-owned 比較完成 reconciliation，再保留對應 signal status；lock metadata 初始化期間的 signal 也會延後到安全清理後處理。SDKMAN 失敗且安全 reconciliation 成功時，保留 SDKMAN 的原始非零 status；CLI 或 `.sdkmanrc` 格式錯誤回傳 `2`，其他安全拒絕回傳 `1`。
 

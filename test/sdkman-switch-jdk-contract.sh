@@ -228,9 +228,10 @@ assert_default_state() {
 
 create_java_candidate() {
   local candidate="$1"
+  local interpreter="${2:-/usr/bin/env bash}"
   mkdir -p "$candidate/bin"
   {
-    printf '%s\n' '#!/usr/bin/env bash'
+    printf '#!%s\n' "$interpreter"
     printf '%s\n' 'log="${FAKE_JAVA_LOG:?}"'
     printf '%s\n' 'printf "java JAVA_HOME=<%s>\n" "${JAVA_HOME-}" >> "$log"'
     printf '%s\n' 'printf "java argc=%s\n" "$#" >> "$log"'
@@ -519,9 +520,11 @@ write_fake_ln() {
 write_fake_mkdir() {
   {
     printf '%s\n' '#!/usr/bin/env bash'
-    printf '%s\n' '"${FAKE_REAL_MKDIR:?}" "$@" || exit $?'
     printf '%s\n' 'fake_mkdir_destination=""'
     printf '%s\n' 'for fake_mkdir_arg in "$@"; do fake_mkdir_destination="$fake_mkdir_arg"; done'
+    printf '%s\n' 'printf "mkdir destination=<%s>\\n" "$fake_mkdir_destination" >> "${FAKE_MKDIR_LOG:?}"'
+    printf '%s\n' 'if [[ -n "${FAKE_MKDIR_FAIL_STATUS:-}" && "$fake_mkdir_destination" == "${FAKE_MKDIR_FAIL_PATH:-}" ]]; then exit "$FAKE_MKDIR_FAIL_STATUS"; fi'
+    printf '%s\n' '"${FAKE_REAL_MKDIR:?}" "$@" || exit $?'
     printf '%s\n' 'if [[ "${FAKE_MKDIR_SIGNAL_LOCK_INIT:-}" != TERM || "$fake_mkdir_destination" != "${FAKE_LOCK_PATH:-}" ]]; then exit 0; fi'
     printf '%s\n' 'if [[ -e "${FAKE_MKDIR_SIGNAL_MARKER:?}" ]]; then exit 0; fi'
     printf '%s\n' 'set -C'
@@ -606,6 +609,7 @@ begin_case() {
   export FAKE_REAL_MKDIR="$real_mkdir"
   export FAKE_MKDIR_SIGNAL_LOG="$case_dir/lock-init-signal.log"
   export FAKE_MKDIR_SIGNAL_MARKER="$case_dir/lock-init-signal.marker"
+  export FAKE_MKDIR_LOG="$case_dir/mkdir.log"
   export FAKE_LOCK_PATH="$SDKMAN_CANDIDATES_DIR/.sdkman-switch-jdk.lock"
   export FAKE_RESTORE_TEMP_PREFIX="$case_java_dir/.sdkman-switch-jdk-restore."
   export FAKE_SDK_INSTALL_STATUS=0
@@ -622,6 +626,8 @@ begin_case() {
   unset FAKE_PROJECT_SDKMANRC
   unset FAKE_SDK_ENV_DIRECT
   unset FAKE_MKDIR_SIGNAL_LOCK_INIT
+  unset FAKE_MKDIR_FAIL_PATH
+  unset FAKE_MKDIR_FAIL_STATUS
   unset FAKE_SDK_SIGNAL_AFTER_MUTATION
   unset FAKE_SDK_SIGNAL_AFTER_CANDIDATE
   unset FAKE_SDK_SIGNAL_AFTER_ACTION
@@ -647,6 +653,7 @@ begin_case() {
   : > "$FAKE_SDK_SIGNAL_LOG"
   : > "$FAKE_PATH_HIJACK_LOG"
   : > "$FAKE_MKDIR_SIGNAL_LOG"
+  : > "$FAKE_MKDIR_LOG"
   : > "$FAKE_SDK_ENV_OPERATION_FILE"
   write_fake_init
   write_fake_mv
@@ -1295,179 +1302,270 @@ scenario_restore_gnu_fallback_third_writer() {
   printf 'PASS %s\n' "$case_name"
 }
 
-scenario_run_success_absolute_path_shadow_payload() {
-  begin_case run_success_absolute_path_shadow_payload
-  local old_identifier='17.0.9-tem'
+scenario_run_existing_candidate_without_init() {
+  begin_case run_existing_candidate_without_init
   local target_identifier='21.0.9-tem'
-  local payload_path="$case_dir/payload"
-  create_java_candidate "$case_java_dir/$old_identifier"
-  create_java_candidate "$case_java_dir/$target_identifier"
-  set_default absolute "$old_identifier"
-  write_shadow_java
-  export PATH="$fake_bin:$shadow_bin:$original_path"
-  export FAKE_SDK_USE_MUTATE=none
+  local stateless_root="$case_dir/sdkman stateless root"
+  local stateless_candidates
+  local target
+  local malformed_current
+  local attacker_candidates="$case_dir/attacker candidates;literal"
+
+  mkdir -p "$stateless_root/bin" "$attacker_candidates/java"
+  stateless_root="$(cd "$stateless_root" && pwd -P)"
+  stateless_candidates="$stateless_root/candidates"
+  target="$stateless_candidates/java/$target_identifier"
+  malformed_current="$stateless_candidates/java/current"
+  create_java_candidate "$target"
+  create_incomplete_candidate "$attacker_candidates/java/$target_identifier"
+  printf '%s\n' 'not-a-symlink' > "$malformed_current"
+  cp "$malformed_current" "$case_dir/current-before"
+  export SDKMAN_DIR="$stateless_root"
+  export SDKMAN_CANDIDATES_DIR="$attacker_candidates"
   export FAKE_PAYLOAD_STATUS=23
 
-  run_capture bash "$run_script" "$target_identifier" -- "$payload_path" \
-    'arg with spaces' '' 'glob*value?' '--' '--flag=value'
-  assert_status 23 'payload exit status is preserved'
-  assert_default_state "link:$case_java_dir/$old_identifier" 'absolute run default is restored'
-  assert_file_empty "$FAKE_MV_LOG" 'unchanged absolute run does not call mv'
-  assert_file_not_contains "$FAKE_SHADOW_LOG" 'shadow-java-called' 'candidate java wins over PATH shadow'
-  assert_file_contains "$FAKE_JAVA_LOG" 'java arg[0]=<-version>' 'candidate java performs version probe'
-  assert_file_contains "$FAKE_SDK_LOG" 'sdk arg[0]=<use>' 'existing default invokes sdk use'
-  assert_file_contains "$case_dir/stderr" "java: $case_java_dir/$target_identifier/bin/java" 'run reports exact candidate java path'
+  run_capture bash "$run_script" "$target_identifier" -- "$case_dir/payload" \
+    'arg with spaces' '' 'glob*value?' '--flag=value'
+  assert_status 23 'installed candidate runs without SDKMAN init'
+  assert_file_empty "$FAKE_INIT_LOG" 'stateless runner does not source SDKMAN init'
+  assert_file_empty "$FAKE_SDK_LOG" 'stateless runner does not invoke sdk'
+  assert_file_not_contains "$FAKE_MKDIR_LOG" \
+    "mkdir destination=<$stateless_candidates/.sdkman-switch-jdk.lock>" \
+    'stateless runner does not attempt a lock mkdir'
+  assert_path_absent "$stateless_candidates/.sdkman-switch-jdk.lock" \
+    'stateless runner does not create a lock beside its candidate'
+  assert_path_absent "$attacker_candidates/.sdkman-switch-jdk.lock" \
+    'stateless runner ignores injected SDKMAN_CANDIDATES_DIR'
+  if ! cmp "$case_dir/current-before" "$malformed_current" >/dev/null 2>&1; then
+    fail 'stateless runner changed a malformed current path'
+  fi
   {
-    printf 'payload JAVA_HOME=<%s>\n' "$case_java_dir/$target_identifier"
-    printf 'payload PATH=<%s>\n' "$case_java_dir/$target_identifier/bin:$fake_bin:$shadow_bin:$original_path"
-    printf 'payload java=<%s>\n' "$case_java_dir/$target_identifier/bin/java"
-    printf 'payload argc=5\n'
+    printf 'payload JAVA_HOME=<%s>\n' "$target"
+    printf 'payload PATH=<%s>\n' "$target/bin:$fake_bin:$original_path"
+    printf 'payload java=<%s>\n' "$target/bin/java"
+    printf 'payload argc=4\n'
     printf 'payload arg[0]=<arg with spaces>\n'
     printf 'payload arg[1]=<>\n'
     printf 'payload arg[2]=<glob*value?>\n'
-    printf 'payload arg[3]=<-->\n'
-    printf 'payload arg[4]=<--flag=value>\n'
+    printf 'payload arg[3]=<--flag=value>\n'
   } > "$case_dir/expected-payload.log"
   if ! cmp "$case_dir/expected-payload.log" "$FAKE_PAYLOAD_LOG" >/dev/null 2>&1; then
-    fail 'payload argv or environment was not preserved exactly'
+    fail 'stateless runner did not preserve payload argv or environment exactly'
   fi
   scenario_count=$((scenario_count + 1))
   printf 'PASS %s\n' "$case_name"
 }
 
-scenario_run_success_relative_unchanged() {
-  begin_case run_success_relative_unchanged
-  local old_identifier='17.0.9-tem'
+scenario_run_empty_path_is_safe() {
+  begin_case run_empty_path_is_safe
   local target_identifier='21.0.9-tem'
-  create_java_candidate "$case_java_dir/$old_identifier"
-  create_java_candidate "$case_java_dir/$target_identifier"
-  set_default relative "$old_identifier" "../java/$old_identifier"
-  export FAKE_SDK_USE_MUTATE=none
-  export FAKE_MV_MODE=gnu
+  local stateless_root="$case_dir/sdkman-empty-path"
+  local target
 
-  run_capture bash "$run_script" "$target_identifier" -- "$case_dir/payload" simple
-  assert_status 0 'relative run succeeds'
-  assert_default_state "link:../java/$old_identifier" 'relative run default is restored exactly'
-  assert_file_empty "$FAKE_MV_LOG" 'unchanged relative run does not call mv'
-  assert_file_contains "$FAKE_PAYLOAD_LOG" 'payload arg[0]=<simple>' 'relative run invokes payload'
-  assert_no_restore_temp_dirs
+  mkdir -p "$stateless_root/bin"
+  stateless_root="$(cd "$stateless_root" && pwd -P)"
+  target="$stateless_root/candidates/java/$target_identifier"
+  create_java_candidate "$target" /bin/bash
+  export SDKMAN_DIR="$stateless_root"
+  unset SDKMAN_CANDIDATES_DIR
+  export FAKE_PAYLOAD_STATUS=29
+  export PATH=''
+  run_capture /bin/bash "$run_script" "$target_identifier" -- /bin/bash "$case_dir/payload" empty-path
+  export PATH="$fake_bin:$original_path"
+
+  assert_status 29 'empty caller PATH preserves the payload status'
+  assert_file_empty "$FAKE_INIT_LOG" 'empty PATH fast path does not source SDKMAN init'
+  assert_file_empty "$FAKE_SDK_LOG" 'empty PATH fast path does not invoke sdk'
+  assert_file_not_contains "$FAKE_MKDIR_LOG" \
+    "mkdir destination=<$stateless_root/candidates/.sdkman-switch-jdk.lock>" \
+    'empty PATH fast path does not attempt a lock mkdir'
+  assert_file_contains "$FAKE_JAVA_LOG" 'java arg[0]=<-version>' \
+    'absolute-shebang candidate java performs the version probe'
+  {
+    printf 'payload JAVA_HOME=<%s>\n' "$target"
+    printf 'payload PATH=<%s>\n' "$target/bin"
+    printf 'payload java=<%s>\n' "$target/bin/java"
+    printf 'payload argc=1\n'
+    printf 'payload arg[0]=<empty-path>\n'
+  } > "$case_dir/expected-payload.log"
+  if ! cmp "$case_dir/expected-payload.log" "$FAKE_PAYLOAD_LOG" >/dev/null 2>&1; then
+    fail 'empty PATH runner did not preserve the exact isolated payload environment'
+  fi
   scenario_count=$((scenario_count + 1))
   printf 'PASS %s\n' "$case_name"
 }
 
-scenario_run_unexpected_default_gnu_fallback() {
-  begin_case run_unexpected_default_gnu_fallback
-  local old_identifier='17.0.9-tem'
+scenario_run_compound_bash_c_keeps_runner_jdk() {
+  begin_case run_compound_bash_c_keeps_runner_jdk
   local target_identifier='21.0.9-tem'
-  create_java_candidate "$case_java_dir/$old_identifier"
-  create_java_candidate "$case_java_dir/$target_identifier"
-  set_default relative "$old_identifier" "../java/$old_identifier"
-  export FAKE_SDK_USE_MUTATE=target_rel
-  export FAKE_MV_MODE=gnu
+  local stateless_root="$case_dir/sdkman-compound"
+  local target
+  local profile_java="$case_dir/profile-java"
 
-  run_capture bash "$run_script" "$target_identifier" -- "$case_dir/payload" should-not-run
-  assert_status 1 'unexpected run default change is rejected after restore'
-  assert_default_state "link:../java/$old_identifier" 'GNU run fallback restores the original relative default'
-  assert_file_contains "$FAKE_MV_LOG" 'mv arg[0]=<-fh>' 'GNU run restore first probes BSD mv'
-  assert_file_contains "$FAKE_MV_LOG" 'mv arg[0]=<-Tf>' 'GNU run restore uses -Tf fallback'
-  assert_file_empty "$FAKE_PAYLOAD_LOG" 'payload does not run after unexpected default change'
-  assert_file_contains "$case_dir/stderr" 'it was restored' 'unexpected run default change is reported'
-  assert_no_restore_temp_dirs
+  mkdir -p "$stateless_root"
+  stateless_root="$(cd "$stateless_root" && pwd -P)"
+  target="$stateless_root/candidates/java/$target_identifier"
+  create_java_candidate "$target"
+  create_java_candidate "$profile_java"
+  export SDKMAN_DIR="$stateless_root"
+  unset SDKMAN_CANDIDATES_DIR
+  {
+    printf 'export JAVA_HOME=%q\n' "$profile_java"
+    printf 'export PATH=%q/bin:$PATH\n' "$profile_java"
+  } > "$HOME/.bash_profile"
+  export FAKE_PAYLOAD_STATUS=31
+
+  run_capture bash "$run_script" "$target_identifier" -- \
+    bash -lc 'exec "$@"' bash "$case_dir/payload" login-control
+  assert_status 31 'login-shell control preserves the payload status'
+  assert_file_contains "$FAKE_PAYLOAD_LOG" "payload JAVA_HOME=<$profile_java>" \
+    'bash -lc control proves the profile can overwrite JAVA_HOME'
+  assert_file_contains "$FAKE_PAYLOAD_LOG" "payload java=<$profile_java/bin/java>" \
+    'bash -lc control proves the profile can overwrite PATH'
+
+  : > "$FAKE_PAYLOAD_LOG"
+  run_capture bash "$run_script" "$target_identifier" -- \
+    bash -c 'exec "$@"' bash "$case_dir/payload" non-login
+  assert_status 31 'non-login compound command preserves the payload status'
+  assert_file_contains "$FAKE_PAYLOAD_LOG" "payload JAVA_HOME=<$target>" \
+    'bash -c keeps the runner JAVA_HOME'
+  assert_file_contains "$FAKE_PAYLOAD_LOG" "payload java=<$target/bin/java>" \
+    'bash -c keeps the runner java path'
+  assert_file_contains "$FAKE_PAYLOAD_LOG" 'payload arg[0]=<non-login>' \
+    'bash -c preserves compound-command argv'
   scenario_count=$((scenario_count + 1))
   printf 'PASS %s\n' "$case_name"
 }
 
-scenario_run_success_absent() {
-  begin_case run_success_absent
+scenario_lock_create_failure_is_not_type_error() {
+  begin_case lock_create_failure_is_not_type_error
   local target_identifier='21.0.9-tem'
-  create_java_candidate "$case_java_dir/$target_identifier"
-  set_default absent "$target_identifier"
+  local lock_path="$SDKMAN_CANDIDATES_DIR/.sdkman-switch-jdk.lock"
 
-  run_capture bash "$run_script" "$target_identifier" -- "$case_dir/payload" absent
-  assert_status 0 'run succeeds with absent default'
-  assert_default_state absent 'absent run default remains absent'
-  assert_file_empty "$FAKE_SDK_LOG" 'absent run skips sdk use'
-  assert_file_empty "$FAKE_MV_LOG" 'absent run does not restore through mv'
-  assert_file_contains "$FAKE_PAYLOAD_LOG" 'payload arg[0]=<absent>' 'absent run invokes payload'
+  export FAKE_MKDIR_FAIL_PATH="$lock_path"
+  export FAKE_MKDIR_FAIL_STATUS=13
+  run_capture bash "$install_script" "$target_identifier"
+  assert_status 1 'lock creation failure returns one'
+  assert_path_absent "$lock_path" 'failed lock creation leaves no lock path'
+  assert_file_contains "$FAKE_MKDIR_LOG" "mkdir destination=<$lock_path>" \
+    'fake mkdir received the lock creation request'
+  assert_file_empty "$FAKE_SDK_LOG" 'lock creation failure blocks sdk invocation'
+  assert_file_not_contains "$case_dir/stderr" 'not a directory' \
+    'absent lock path is not misreported as a type error'
+  assert_file_contains "$case_dir/stderr" 'Could not create the SDKMAN default-state lock' \
+    'lock creation failure is reported as a creation failure'
   scenario_count=$((scenario_count + 1))
   printf 'PASS %s\n' "$case_name"
 }
 
-scenario_run_use_failure_preserves_status() {
-  begin_case run_use_failure_preserves_status
-  local old_identifier='17.0.9-tem'
+scenario_lock_regular_file_is_unsafe() {
+  begin_case lock_regular_file_is_unsafe
   local target_identifier='21.0.9-tem'
-  create_java_candidate "$case_java_dir/$old_identifier"
-  create_java_candidate "$case_java_dir/$target_identifier"
-  set_default absolute "$old_identifier"
-  export FAKE_SDK_USE_STATUS=19
-  export FAKE_SDK_USE_MUTATE=target_rel
+  local lock_path="$SDKMAN_CANDIDATES_DIR/.sdkman-switch-jdk.lock"
 
-  run_capture bash "$run_script" "$target_identifier" -- "$case_dir/payload" should-not-run
-  assert_status 19 'run failure preserves sdk use status'
-  assert_default_state "link:$case_java_dir/$old_identifier" 'run failure restores original default'
-  assert_file_empty "$FAKE_PAYLOAD_LOG" 'payload does not run after sdk use failure'
-  assert_file_contains "$case_dir/stderr" 'status 19' 'run failure reports sdk use status'
-  assert_file_contains "$FAKE_MV_LOG" 'mv arg[0]=<-fh>' 'run failure restores through BSD mv'
-  assert_no_restore_temp_dirs
+  printf '%s\n' 'untrusted regular file' > "$lock_path"
+  cp "$lock_path" "$case_dir/lock-before"
+  run_capture bash "$install_script" "$target_identifier"
+  assert_status 1 'regular-file lock path returns one'
+  if ! cmp "$case_dir/lock-before" "$lock_path" >/dev/null 2>&1; then
+    fail 'regular-file lock path was modified'
+  fi
+  assert_file_empty "$FAKE_SDK_LOG" 'regular-file lock path blocks sdk invocation'
+  assert_file_contains "$case_dir/stderr" 'SDKMAN default-state lock path is unsafe' \
+    'regular-file lock path is reported as unsafe'
   scenario_count=$((scenario_count + 1))
   printf 'PASS %s\n' "$case_name"
 }
 
-scenario_run_use_failure_byte_exact_default() {
-  begin_case run_use_failure_byte_exact_default
+scenario_lock_symlink_is_unsafe() {
+  begin_case lock_symlink_is_unsafe
   local target_identifier='21.0.9-tem'
-  local raw_target=$'-f\n'
-  create_java_candidate "$case_java_dir/$target_identifier"
-  set_default relative unused "$raw_target"
-  export FAKE_SDK_USE_STATUS=19
-  export FAKE_SDK_USE_MUTATE=target_rel
+  local lock_path="$SDKMAN_CANDIDATES_DIR/.sdkman-switch-jdk.lock"
+  local raw_target='../untrusted-lock-target'
 
-  run_capture bash "$run_script" "$target_identifier" -- "$case_dir/payload" should-not-run
-  assert_status 19 'run failure preserves status with option-like newline default target'
-  assert_link_target_raw "$raw_target" "$case_current" 'run restores option-like newline target byte-for-byte'
-  assert_path_absent "$case_dir/current" 'run rollback does not create a CWD current symlink'
-  assert_file_empty "$FAKE_PAYLOAD_LOG" 'payload does not run after byte-exact sdk use failure'
-  assert_file_contains "$FAKE_MV_LOG" 'mv arg[0]=<-fh>' 'byte-exact run restore uses BSD mv path'
-  assert_no_restore_temp_dirs
-  scenario_count=$((scenario_count + 1))
-  printf 'PASS %s\n' "$case_name"
-}
-
-scenario_run_restore_failure() {
-  begin_case run_restore_failure
-  local old_identifier='17.0.9-tem'
-  local target_identifier='21.0.9-tem'
-  create_java_candidate "$case_java_dir/$old_identifier"
-  create_java_candidate "$case_java_dir/$target_identifier"
-  set_default absolute "$old_identifier"
-  export FAKE_SDK_USE_MUTATE=target_rel
-  export FAKE_MV_MODE=fail
-
-  run_capture bash "$run_script" "$target_identifier" -- "$case_dir/payload" should-not-run
-  assert_status 1 'run restoration failure returns one'
-  assert_default_state "link:$target_identifier" 'failed run restoration leaves observed changed default'
-  assert_file_empty "$FAKE_PAYLOAD_LOG" 'payload does not run after restore failure'
-  assert_file_contains "$case_dir/stderr" 'automatic restoration failed' 'run restore failure is reported'
-  assert_no_restore_temp_dirs
+  ln -s -- "$raw_target" "$lock_path"
+  run_capture bash "$install_script" "$target_identifier"
+  assert_status 1 'symlink lock path returns one'
+  assert_link_target_raw "$raw_target" "$lock_path" 'symlink lock path was not modified'
+  assert_file_empty "$FAKE_SDK_LOG" 'symlink lock path blocks sdk invocation'
+  assert_file_contains "$case_dir/stderr" 'SDKMAN default-state lock path is unsafe' \
+    'symlink lock path is reported as unsafe'
   scenario_count=$((scenario_count + 1))
   printf 'PASS %s\n' "$case_name"
 }
 
 scenario_run_incomplete_candidate() {
   begin_case run_incomplete_candidate
-  local old_identifier='17.0.9-tem'
   local target_identifier='21.0.9-tem'
-  create_java_candidate "$case_java_dir/$old_identifier"
-  create_incomplete_candidate "$case_java_dir/$target_identifier"
-  set_default relative "$old_identifier" "../java/$old_identifier"
+  local stateless_root="$case_dir/sdkman-incomplete"
+
+  create_incomplete_candidate "$stateless_root/candidates/java/$target_identifier"
+  export SDKMAN_DIR="$stateless_root"
+  unset SDKMAN_CANDIDATES_DIR
 
   run_capture bash "$run_script" "$target_identifier" -- "$case_dir/payload" should-not-run
   assert_status 1 'incomplete run candidate is rejected'
-  assert_default_state "link:../java/$old_identifier" 'incomplete run candidate does not alter default'
   assert_file_empty "$FAKE_SDK_LOG" 'incomplete run candidate skips sdk use'
   assert_file_empty "$FAKE_PAYLOAD_LOG" 'payload does not run for incomplete candidate'
   assert_file_contains "$case_dir/stderr" 'not installed or is incomplete' 'incomplete run candidate is reported'
+  scenario_count=$((scenario_count + 1))
+  printf 'PASS %s\n' "$case_name"
+}
+
+scenario_run_relative_sdkman_dir_is_rejected() {
+  begin_case run_relative_sdkman_dir_is_rejected
+  local target_identifier='21.0.9-tem'
+
+  create_java_candidate "$case_dir/relative-sdkman/candidates/java/$target_identifier"
+  export SDKMAN_DIR='relative-sdkman'
+  unset SDKMAN_CANDIDATES_DIR
+
+  run_capture /bin/bash "$run_script" "$target_identifier" -- "$case_dir/payload" should-not-run
+  assert_status 1 'relative SDKMAN_DIR is rejected'
+  assert_file_empty "$FAKE_JAVA_LOG" 'relative SDKMAN_DIR is rejected before probing Java'
+  assert_file_empty "$FAKE_PAYLOAD_LOG" 'relative SDKMAN_DIR is rejected before the payload'
+  assert_file_contains "$case_dir/stderr" 'SDKMAN_DIR must be an absolute path' \
+    'relative SDKMAN_DIR reports the unsafe configuration'
+  scenario_count=$((scenario_count + 1))
+  printf 'PASS %s\n' "$case_name"
+}
+
+scenario_run_invalid_identifiers_are_rejected() {
+  begin_case run_invalid_identifiers_are_rejected
+  local invalid_identifier
+
+  export SDKMAN_DIR="$case_dir/sdkman-invalid-identifiers"
+  unset SDKMAN_CANDIDATES_DIR
+  for invalid_identifier in '../x' 'a/b' '/absolute' '.hidden' $'bad\nidentifier'; do
+    : > "$FAKE_JAVA_LOG"
+    : > "$FAKE_PAYLOAD_LOG"
+    run_capture /bin/bash "$run_script" "$invalid_identifier" -- "$case_dir/payload" should-not-run
+    assert_status 2 "invalid identifier is rejected: $invalid_identifier"
+    assert_file_empty "$FAKE_JAVA_LOG" 'invalid identifier is rejected before probing Java'
+    assert_file_empty "$FAKE_PAYLOAD_LOG" 'invalid identifier is rejected before the payload'
+    assert_file_contains "$case_dir/stderr" 'Invalid SDKMAN Java identifier' \
+      'invalid identifier reports the validation failure'
+  done
+  scenario_count=$((scenario_count + 1))
+  printf 'PASS %s\n' "$case_name"
+}
+
+scenario_run_java_probe_failure_blocks_payload() {
+  begin_case run_java_probe_failure_blocks_payload
+  local target_identifier='21.0.9-tem'
+  local stateless_root="$case_dir/sdkman-probe-failure"
+  local target="$stateless_root/candidates/java/$target_identifier"
+
+  create_java_candidate "$target" /bin/bash
+  export SDKMAN_DIR="$stateless_root"
+  unset SDKMAN_CANDIDATES_DIR
+  export FAKE_JAVA_STATUS=17
+
+  run_capture /bin/bash "$run_script" "$target_identifier" -- /bin/bash "$case_dir/payload" should-not-run
+  assert_status 17 'java version probe failure status is preserved'
+  assert_file_contains "$FAKE_JAVA_LOG" 'java arg[0]=<-version>' \
+    'failed candidate java performs the version probe'
+  assert_file_empty "$FAKE_PAYLOAD_LOG" 'failed Java probe blocks the payload'
   scenario_count=$((scenario_count + 1))
   printf 'PASS %s\n' "$case_name"
 }
@@ -1480,55 +1578,6 @@ scenario_run_reserved_current() {
   assert_file_empty "$FAKE_INIT_LOG" 'reserved run identifier is rejected before SDKMAN init'
   assert_file_empty "$FAKE_PAYLOAD_LOG" 'payload does not run for reserved identifier'
   assert_file_contains "$case_dir/stderr" 'reserved name' 'reserved run identifier is reported'
-  scenario_count=$((scenario_count + 1))
-  printf 'PASS %s\n' "$case_name"
-}
-
-scenario_run_concurrent_third_writer() {
-  begin_case run_concurrent_third_writer
-  local old_identifier='17.0.9-tem'
-  local target_identifier='21.0.9-tem'
-  local third_identifier='22.0.1-tem'
-  local third_target="$case_java_dir/$third_identifier"
-  create_java_candidate "$case_java_dir/$old_identifier"
-  create_java_candidate "$case_java_dir/$target_identifier"
-  create_java_candidate "$third_target"
-  set_default absolute "$old_identifier"
-  export FAKE_SDK_USE_MUTATE=target_rel
-  export FAKE_SDK_THIRD_WRITER_TARGET="$third_target"
-
-  run_capture bash "$run_script" "$target_identifier" -- "$case_dir/payload" should-not-run
-  assert_status 1 'run refuses a concurrent third-writer default change'
-  assert_third_writer_ran "$third_target"
-  assert_file_empty "$FAKE_PAYLOAD_LOG" 'payload does not run after a concurrent default change'
-  assert_default_state "link:$third_target" \
-    'run preserves the third writer default instead of restoring the stale original default'
-  assert_file_contains "$case_dir/stderr" 'drifted after the SDKMAN operation' \
-    'run reports the concurrent drift refusal'
-  scenario_count=$((scenario_count + 1))
-  printf 'PASS %s\n' "$case_name"
-}
-
-scenario_run_term_reconciles_default() {
-  begin_case run_term_reconciles_default
-  local old_identifier='17.0.9-tem'
-  local target_identifier='21.0.9-tem'
-
-  create_java_candidate "$case_java_dir/$old_identifier"
-  create_java_candidate "$case_java_dir/$target_identifier"
-  set_default absolute "$old_identifier"
-  export FAKE_SDK_USE_MUTATE=target_rel
-  export FAKE_SDK_SIGNAL_AFTER_MUTATION=TERM
-
-  run_capture bash "$run_script" "$target_identifier" -- "$case_dir/payload" should-not-run
-  assert_status 143 'run preserves TERM status after safe cleanup'
-  assert_sdk_self_signal_ran
-  assert_default_state "link:$case_java_dir/$old_identifier" \
-    'run TERM cleanup restores the original Java default'
-  assert_file_empty "$FAKE_PAYLOAD_LOG" 'run TERM cleanup blocks the payload'
-  assert_path_absent "$SDKMAN_CANDIDATES_DIR/.sdkman-switch-jdk.lock" \
-    'run TERM cleanup releases the owned lock'
-  assert_no_restore_temp_dirs
   scenario_count=$((scenario_count + 1))
   printf 'PASS %s\n' "$case_name"
 }
@@ -1867,17 +1916,17 @@ run_scenario scenario_lock_stale_owner_recovery
 run_scenario scenario_lock_initialization_term_cleans_partial_lock
 run_scenario scenario_restore_pre_cas_third_writer
 run_scenario scenario_restore_gnu_fallback_third_writer
-run_scenario scenario_run_success_absolute_path_shadow_payload
-run_scenario scenario_run_success_relative_unchanged
-run_scenario scenario_run_unexpected_default_gnu_fallback
-run_scenario scenario_run_success_absent
-run_scenario scenario_run_use_failure_preserves_status
-run_scenario scenario_run_use_failure_byte_exact_default
-run_scenario scenario_run_restore_failure
+run_scenario scenario_run_existing_candidate_without_init
+run_scenario scenario_run_empty_path_is_safe
+run_scenario scenario_run_compound_bash_c_keeps_runner_jdk
 run_scenario scenario_run_incomplete_candidate
 run_scenario scenario_run_reserved_current
-run_scenario scenario_run_concurrent_third_writer
-run_scenario scenario_run_term_reconciles_default
+run_scenario scenario_run_relative_sdkman_dir_is_rejected
+run_scenario scenario_run_invalid_identifiers_are_rejected
+run_scenario scenario_run_java_probe_failure_blocks_payload
+run_scenario scenario_lock_create_failure_is_not_type_error
+run_scenario scenario_lock_regular_file_is_unsafe
+run_scenario scenario_lock_symlink_is_unsafe
 run_scenario scenario_full_env_atomic_sdkmanrc_replace_is_rejected_and_reconciled
 run_scenario scenario_full_env_term_reconciles_operation_owned_defaults
 run_scenario scenario_full_env_success_allows_authorized_default
