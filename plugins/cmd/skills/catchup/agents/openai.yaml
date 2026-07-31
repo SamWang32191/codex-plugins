@@ -1,8 +1,0 @@
-interface:
-  display_name: "Catchup"
-  short_description: "Quickly get back up to speed on where this session stands and what matters now."
-  icon_small: "./assets/icon.svg"
-  icon_large: "./assets/icon.svg"
-  brand_color: "#0EA5E9"
-policy:
-  allow_implicit_invocation: false
