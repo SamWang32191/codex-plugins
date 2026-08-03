@@ -1,0 +1,6 @@
+interface:
+  display_name: "Daily Reports"
+  short_description: "安全整理並提交 SoftLeader ERP 工作日誌"
+  default_prompt: "Use $daily-reports to draft and safely submit my SoftLeader ERP work report."
+policy:
+  allow_implicit_invocation: false

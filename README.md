@@ -7,6 +7,7 @@
 | Plugin | 路徑 | 用途 |
 | --- | --- | --- |
 | `cmd` | `plugins/cmd` | 提供 commit、push、建立 branch 與 PR 等明確呼叫的工作流程。 |
+| `daily-reports` | `plugins/daily-reports` | 安全整理、驗證、預覽並提交 SoftLeader ERP 工作日誌。 |
 | `dev` | `plugins/dev` | 提供 SDKMAN/JDK 切換等開發工具。 |
 
 Marketplace 定義位於 `.agents/plugins/marketplace.json`。它只登記 plugin 名稱、來源路徑與安裝政策，不保存 local plugin 的版本。
@@ -19,9 +20,11 @@ Marketplace 定義位於 `.agents/plugins/marketplace.json`。它只登記 plugi
 ├── .github/workflows/plugin-versions.yml
 ├── plugins/
 │   ├── cmd/.codex-plugin/plugin.json
+│   ├── daily-reports/.codex-plugin/plugin.json
 │   └── dev/.codex-plugin/plugin.json
 ├── scripts/bump-plugin-versions.mjs
 ├── test/bump-plugin-versions.test.mjs
+├── test/daily_reports_client_test.py
 └── VERSION
 ```
 
@@ -63,6 +66,7 @@ node scripts/bump-plugin-versions.mjs 1.0.0  # 指定版本
 node --check scripts/bump-plugin-versions.mjs
 node --test test/bump-plugin-versions.test.mjs
 node scripts/bump-plugin-versions.mjs --check
+python3 -m unittest discover -s test -p '*_test.py' -v
 ```
 
 ## Local Marketplace 更新
