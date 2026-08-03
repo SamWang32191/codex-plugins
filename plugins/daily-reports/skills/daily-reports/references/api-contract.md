@@ -40,13 +40,28 @@ git -C /Users/samwang/code/github.com/softleader/softleader-erp show FETCH_HEAD:
 - Token 不支援 query string
 - 使用者身分固定取自 API Key owner
 
+### Client 設定的專案選項
+
+`~/.config/softleader/agent-skills/daily-reports/config.json` 可選擇加入 `projects` 陣列，讓 bundled client 在建立或更新工作日誌時使用本機保存的專案選項。每筆設定只允許下列欄位：
+
+```json
+{"id": 701, "code": "P-701", "label": "專案A"}
+```
+
+- `id`：正整數且清單內不可重複。
+- `code`：非空字串或 `null`。
+- `label`：非空字串。
+- `value` 不存入設定；client 以 `str(id)` 派生，與 API 的 options 輸出契約一致。
+
+非空且合法的 `projects` 清單會直接提供 `options projects` 輸出，並作為 PROJECT payload 的 `projectId` 參照來源；這是本機快取，不會依 `reportDate` 或 API key owner 即時過濾，POST 時後端仍可能回傳 `400`。模組、工作類型與立案書仍依各自 API endpoint 驗證。缺少 `projects` 或設定空陣列時，專案查詢與 PROJECT 參照驗證回到 `/personal-api/daily-reports/options/projects?reportDate=...`。若 `projects` 不是陣列、項目欄位不符、型別錯誤或 ID 重複，client 會回報 `invalid_config`，不會 fallback 掩蓋錯誤。
+
 ## Endpoints
 
 | Method | Path | 說明 |
 | --- | --- | --- |
 | GET | `/personal-api/probe` | 驗證 API Key |
 | GET | `/personal-api/daily-reports/options/report-types` | 工作類型選項 |
-| GET | `/personal-api/daily-reports/options/projects?reportDate=YYYY-MM-DD` | 指定日期可用專案 |
+| GET | `/personal-api/daily-reports/options/projects?reportDate=YYYY-MM-DD` | 指定日期可用專案；未設定非空本機 `projects` 清單時使用 |
 | GET | `/personal-api/daily-reports/options/projects/{projectId}/modules?reportDate=YYYY-MM-DD` | 指定日期與專案可用模組 |
 | GET | `/personal-api/daily-reports/options/mandate-charters` | API Key owner 可用立案書 |
 | POST | `/personal-api/daily-reports` | 新增或更新自己的工作日誌 |

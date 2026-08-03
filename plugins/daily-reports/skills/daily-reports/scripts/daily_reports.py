@@ -37,6 +37,7 @@ DETAIL_FIELDS = {
     "description",
     "todos",
 }
+PROJECT_CONFIG_FIELDS = {"id", "code", "label"}
 
 
 class DailyReportsError(Exception):
@@ -79,6 +80,97 @@ def normalize_base_url(value: str) -> str:
     return value.rstrip("/") + "/"
 
 
+def normalize_config_projects(value: Any) -> List[Dict[str, Any]]:
+    """Validate and normalize the optional local project option cache.
+
+    The cache deliberately uses the same display fields as the Personal API
+    option object, except for ``value`` which is always derived from ``id``.
+    This keeps the config small while preventing arbitrary project-list data
+    from being mistaken for a valid option response.
+    """
+    if not isinstance(value, list):
+        raise DailyReportsError(
+            "invalid_config", "projects must be an array when present."
+        )
+
+    normalized: List[Dict[str, Any]] = []
+    seen_ids: Set[int] = set()
+    for index, project in enumerate(value):
+        location = f"projects[{index}]"
+        if not isinstance(project, dict):
+            raise DailyReportsError("invalid_config", f"{location} must be an object.")
+        unknown = sorted(set(project) - PROJECT_CONFIG_FIELDS)
+        missing = sorted(PROJECT_CONFIG_FIELDS - set(project))
+        if unknown or missing:
+            details: Dict[str, Any] = {"path": location}
+            if unknown:
+                details["unknownFields"] = unknown
+            if missing:
+                details["missingFields"] = missing
+            raise DailyReportsError(
+                "invalid_config",
+                f"{location} must contain only id, code, and label.",
+                details,
+            )
+
+        project_id = project["id"]
+        if isinstance(project_id, bool) or not isinstance(project_id, int) or project_id <= 0:
+            raise DailyReportsError(
+                "invalid_config", f"{location}.id must be a positive integer."
+            )
+        if project_id in seen_ids:
+            raise DailyReportsError(
+                "invalid_config",
+                "projects must not contain duplicate ids.",
+                {"projectId": project_id},
+            )
+
+        code = project["code"]
+        if code is not None and (not isinstance(code, str) or not code.strip()):
+            raise DailyReportsError(
+                "invalid_config",
+                f"{location}.code must be a non-empty string or null.",
+            )
+        label = project["label"]
+        if not isinstance(label, str) or not label.strip():
+            raise DailyReportsError(
+                "invalid_config", f"{location}.label must be a non-empty string."
+            )
+
+        seen_ids.add(project_id)
+        normalized.append({"id": project_id, "code": code, "label": label})
+    return normalized
+
+
+def configured_projects(config: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
+    """Return a non-empty configured project cache, if present.
+
+    A missing key or an explicitly empty list means that no local source is
+    configured and permits the live endpoint.  Malformed values are still
+    rejected by ``normalize_config_projects`` rather than silently falling
+    back.
+    """
+    if "projects" not in config:
+        return None
+    projects = normalize_config_projects(config["projects"])
+    return projects or None
+
+
+def project_options_from_config(config: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
+    projects = configured_projects(config)
+    if projects is None:
+        return None
+    return [
+        {
+            "id": project["id"],
+            "value": str(project["id"]),
+            "code": project["code"],
+            "label": project["label"],
+        }
+        for project in projects
+    ]
+
+
 def load_config(path: pathlib.Path) -> Dict[str, Any]:
     if not path.is_file():
         raise DailyReportsError(
@@ -104,11 +196,14 @@ def load_config(path: pathlib.Path) -> Dict[str, Any]:
     base_url = raw.get("baseUrl", DEFAULT_BASE_URL)
     if not isinstance(base_url, str):
         raise DailyReportsError("invalid_config", "baseUrl must be a string when present.")
-    return {
+    config = {
         "apiToken": token.strip(),
         "baseUrl": normalize_base_url(base_url),
         "path": str(path),
     }
+    if "projects" in raw:
+        config["projects"] = normalize_config_projects(raw["projects"])
+    return config
 
 
 def build_url(base_url: str, endpoint: str, query: Optional[Dict[str, str]] = None) -> str:
@@ -371,6 +466,7 @@ def option_ids(options: Any, endpoint: str) -> Set[int]:
 
 def remote_validate(config: Dict[str, Any], payload: Dict[str, Any]) -> List[str]:
     report_date = payload["reportDate"]
+    used_configured_projects = False
     report_type_endpoint = "/personal-api/daily-reports/options/report-types"
     type_options = request_json(config, report_type_endpoint)
     if not isinstance(type_options, list):
@@ -395,8 +491,15 @@ def remote_validate(config: Dict[str, Any], payload: Dict[str, Any]) -> List[str
     project_details = [d for d in payload["details"] if d["reportType"] == "PROJECT"]
     if project_details:
         project_endpoint = "/personal-api/daily-reports/options/projects"
-        project_options = request_json(config, project_endpoint, {"reportDate": report_date})
-        project_ids = option_ids(project_options, project_endpoint)
+        configured = configured_projects(config)
+        if configured is None:
+            project_options = request_json(
+                config, project_endpoint, {"reportDate": report_date}
+            )
+            project_ids = option_ids(project_options, project_endpoint)
+        else:
+            used_configured_projects = True
+            project_ids = {project["id"] for project in configured}
         unavailable_projects = sorted(
             {d["projectId"] for d in project_details} - project_ids
         )
@@ -446,9 +549,14 @@ def remote_validate(config: Dict[str, Any], payload: Dict[str, Any]) -> List[str
                 {"mandateCharterIds": unavailable_charters},
             )
 
-    return [
+    warnings = [
         "Personal API cannot read existing daily reports; cross-existing duplicate entries and complete daily total hours remain unknown."
     ]
+    if used_configured_projects:
+        warnings.append(
+            "Configured project list was not live-validated for API key owner or reportDate; POST may still reject the project reference."
+        )
+    return warnings
 
 
 def cmd_precheck(args: argparse.Namespace) -> None:
@@ -487,6 +595,10 @@ def cmd_options(args: argparse.Namespace) -> None:
         endpoint = "/personal-api/daily-reports/options/report-types"
         query = None
     elif args.option_kind == "projects":
+        configured = project_options_from_config(config)
+        if configured is not None:
+            emit_ready(configured)
+            return
         endpoint = "/personal-api/daily-reports/options/projects"
         query = {"reportDate": args.report_date} if args.report_date else None
     elif args.option_kind == "modules":
