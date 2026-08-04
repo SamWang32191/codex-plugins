@@ -1,6 +1,6 @@
 {
   "name": "daily-reports",
-  "version": "0.1.16",
+  "version": "0.1.17",
   "description": "Safely draft, validate, and submit SoftLeader ERP daily reports.",
   "author": {
     "name": "Sam Wang",

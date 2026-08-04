@@ -46,7 +46,7 @@ For every actionable claim in the review set:
 2. Reproduce the claim or establish it with focused static evidence when practical.
 3. Classify it as `fix`, `reject`, or `non-actionable`.
    - `fix`: the claim is correct; implement the smallest complete change.
-   - `reject`: the claim is incorrect, stale, already addressed, or unsupported; preserve the code and record concise evidence.
+   - `reject`: the claim is incorrect, stale, already addressed, unsupported, or outside the pull request's stated scope; preserve the code and record concise evidence.
    - `non-actionable`: the entry requests no code or documentation change; record why no change is required.
 4. Split mixed feedback into separate claims and classify each one.
 
