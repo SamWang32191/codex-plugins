@@ -1,7 +1,7 @@
 interface:
   display_name: "SDKMAN Switch JDK"
-  short_description: "Safely switch SDKMAN-managed Java versions"
+  short_description: "Temporarily use a local SDKMAN JDK"
   icon_small: "./assets/icon.svg"
   icon_large: "./assets/icon.svg"
   brand_color: "#0EA5E9"
-  default_prompt: "Use $sdkman-switch-jdk to select and safely switch to the JDK required by this project."
+  default_prompt: "Use $sdkman-switch-jdk to temporarily run this project with its required JDK."
