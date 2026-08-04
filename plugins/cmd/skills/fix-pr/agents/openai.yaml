@@ -1,0 +1,9 @@
+interface:
+  display_name: "Fix Pr"
+  short_description: "Review and address the latest PR feedback"
+  icon_small: "./assets/icon.svg"
+  icon_large: "./assets/icon.svg"
+  brand_color: "#0EA5E9"
+  default_prompt: "Use $fix-pr with this pull request URL to verify its review set, apply justified fixes, push changes, and close every targeted thread."
+policy:
+  allow_implicit_invocation: false
