@@ -24,7 +24,7 @@ description: 安全地升級此 repository 所有 Codex plugin 的 lockstep 版�
    git status --short
    ```
 
-   驗證應使用 Node.js 22 或 24。保留其他人既有的未提交變更；若 `VERSION` 或 plugin manifest 已有與本次升版無關的變更，先釐清其意圖。
+   驗證應使用 Node.js 26 以上版本。保留其他人既有的未提交變更；若 `VERSION` 或 plugin manifest 已有與本次升版無關的變更，先釐清其意圖。
 
 2. 先執行完整前置檢查：
 

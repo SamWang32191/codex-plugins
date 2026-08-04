@@ -47,7 +47,7 @@ node --test test/bump-plugin-versions.test.mjs
 node scripts/bump-plugin-versions.mjs --check
 ```
 
-新增或修改 JSON 後，確認 JSON 可以解析。CI 使用 Node.js 22 與 24 執行同一套 version-management tests 與 lockstep check。
+新增或修改 JSON 後，確認 JSON 可以解析。CI 使用最低支援版本 Node.js 26 執行 version-management tests 與 lockstep check。
 
 ## Codex Local Plugin 行為
 

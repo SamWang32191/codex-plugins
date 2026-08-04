@@ -32,7 +32,7 @@ Marketplace 定義位於 `.agents/plugins/marketplace.json`。它只登記 plugi
 
 ## 版本管理
 
-需要 Node.js 22 或 24 LTS；腳本只使用 Node.js 標準函式庫，不需要安裝套件。
+需要 Node.js 26 以上版本；腳本只使用 Node.js 標準函式庫，不需要安裝套件。
 
 查看與檢查目前版本：
 
@@ -77,4 +77,4 @@ python3 -m unittest discover -s test -p '*_test.py' -v
 
 ## CI
 
-`.github/workflows/plugin-versions.yml` 會在 Node.js 22 與 24 上執行測試與 `--check`。任何 manifest 漂移、無效 JSON 或無效版本都會使 CI 失敗。
+`.github/workflows/plugin-versions.yml` 會在最低支援版本 Node.js 26 上執行測試與 `--check`。任何 manifest 漂移、無效 JSON 或無效版本都會使 CI 失敗。
