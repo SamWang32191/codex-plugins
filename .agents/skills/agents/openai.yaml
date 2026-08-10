@@ -1,5 +1,5 @@
 interface:
-  display_name: "Bump New Version"
+  display_name: "bump-new-version"
   short_description: "Bump New Version"
 policy:
   allow_implicit_invocation: false
