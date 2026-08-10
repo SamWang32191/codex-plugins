@@ -1,5 +1,5 @@
 interface:
-  display_name: "Commit Push"
+  display_name: "commit-push"
   short_description: "Commit changes and push the branch"
   icon_small: "./assets/icon.svg"
   icon_large: "./assets/icon.svg"

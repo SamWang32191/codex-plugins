@@ -1,5 +1,5 @@
 interface:
-  display_name: "Commit"
+  display_name: "commit"
   short_description: "Create a focused git commit"
   icon_small: "./assets/icon.svg"
   icon_large: "./assets/icon.svg"

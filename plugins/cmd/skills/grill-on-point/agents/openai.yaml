@@ -1,5 +1,5 @@
 interface:
-  display_name: "Grill On Point"
+  display_name: "grill-on-point"
   short_description: "Grill On Point"
   icon_small: "./assets/icon.svg"
   icon_large: "./assets/icon.svg"

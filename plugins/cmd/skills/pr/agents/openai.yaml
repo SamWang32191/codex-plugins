@@ -1,5 +1,5 @@
 interface:
-  display_name: "PR"
+  display_name: "pr"
   short_description: "Open a PR for the current branch"
   icon_small: "./assets/icon.svg"
   icon_large: "./assets/icon.svg"

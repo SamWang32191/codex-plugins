@@ -1,5 +1,5 @@
 interface:
-  display_name: "SDKMAN Switch JDK"
+  display_name: "sdkman-switch-jdk"
   short_description: "Temporarily use a local SDKMAN JDK"
   icon_small: "./assets/icon.svg"
   icon_large: "./assets/icon.svg"

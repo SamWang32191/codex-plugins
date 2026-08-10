@@ -1,5 +1,5 @@
 interface:
-  display_name: "Create Branch"
+  display_name: "create-branch"
   short_description: "Create a local or linked git branch"
   icon_small: "./assets/icon.svg"
   icon_large: "./assets/icon.svg"

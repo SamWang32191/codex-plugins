@@ -1,5 +1,5 @@
 interface:
-  display_name: "Push"
+  display_name: "push"
   short_description: "Push current branch to origin"
   icon_small: "./assets/icon.svg"
   icon_large: "./assets/icon.svg"

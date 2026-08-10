@@ -1,5 +1,5 @@
 interface:
-  display_name: "Fix Pr"
+  display_name: "fix-pr"
   short_description: "Review and address the latest PR feedback"
   icon_small: "./assets/icon.svg"
   icon_large: "./assets/icon.svg"

@@ -1,5 +1,5 @@
 interface:
-  display_name: "Commit Push PR"
+  display_name: "commit-push-pr"
   short_description: "Commit, push, and open a pull request"
   icon_small: "./assets/icon.svg"
   icon_large: "./assets/icon.svg"
