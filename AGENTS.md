@@ -58,3 +58,17 @@ node scripts/bump-plugin-versions.mjs --check
 
 - Repository 文件使用繁體中文；程式識別字、路徑與 CLI 命令保留原文。
 - 交付前檢查 `git diff` 與 `git status`，只報告本次實際修改；不得把共享 worktree 中的其他變更歸功於本次工作。
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs for this repo live as GitHub issues. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The canonical triage roles map directly to standard labels (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context layout (`CONTEXT.md` + `docs/adr/` at repo root). See `docs/agents/domain.md`.
