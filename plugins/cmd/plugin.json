@@ -1,0 +1,5 @@
+{
+  "name": "cmd",
+  "version": "0.1.21",
+  "description": "Prompt-based wrapper commands for explicit agent workflows in Antigravity."
+}

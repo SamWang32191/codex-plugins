@@ -30,38 +30,44 @@ async function discoverManifests(root) {
   const pluginsRoot = path.join(root, "plugins");
   const entries = await readdir(pluginsRoot, { withFileTypes: true });
   const manifests = [];
+  const manifestRelativePaths = [
+    path.join(".codex-plugin", "plugin.json"),
+    "plugin.json",
+  ];
 
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
     if (!entry.isDirectory()) {
       continue;
     }
 
-    const manifestPath = path.join(pluginsRoot, entry.name, ".codex-plugin", "plugin.json");
-    try {
-      const contents = await readFile(manifestPath, "utf8");
-      let manifest;
+    for (const relativePath of manifestRelativePaths) {
+      const manifestPath = path.join(pluginsRoot, entry.name, relativePath);
       try {
-        manifest = JSON.parse(contents);
+        const contents = await readFile(manifestPath, "utf8");
+        let manifest;
+        try {
+          manifest = JSON.parse(contents);
+        } catch (error) {
+          throw new Error(`${manifestPath}: invalid JSON: ${error.message}`);
+        }
+
+        if (
+          manifest === null ||
+          Array.isArray(manifest) ||
+          typeof manifest !== "object" ||
+          typeof manifest.name !== "string" ||
+          typeof manifest.version !== "string"
+        ) {
+          throw new Error(`${manifestPath}: manifest requires string name and version fields`);
+        }
+
+        manifests.push({ contents, manifestPath, manifest });
       } catch (error) {
-        throw new Error(`${manifestPath}: invalid JSON: ${error.message}`);
+        if (error.code === "ENOENT") {
+          continue;
+        }
+        throw error;
       }
-
-      if (
-        manifest === null ||
-        Array.isArray(manifest) ||
-        typeof manifest !== "object" ||
-        typeof manifest.name !== "string" ||
-        typeof manifest.version !== "string"
-      ) {
-        throw new Error(`${manifestPath}: manifest requires string name and version fields`);
-      }
-
-      manifests.push({ contents, manifestPath, manifest });
-    } catch (error) {
-      if (error.code === "ENOENT") {
-        continue;
-      }
-      throw error;
     }
   }
 
