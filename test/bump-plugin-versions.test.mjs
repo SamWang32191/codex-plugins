@@ -17,32 +17,66 @@ import { fileURLToPath } from "node:url";
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const scriptPath = path.join(repositoryRoot, "scripts", "bump-plugin-versions.mjs");
 
-async function createFixture(testContext, versions = ["1.2.3", "1.2.3"]) {
+async function createFixture(testContext, versions = ["1.2.3", "1.2.3", "1.2.3", "1.2.3"]) {
   const root = await mkdtemp(path.join(os.tmpdir(), "plugin-versions-"));
   testContext.after(() => rm(root, { recursive: true, force: true }));
 
   const fixtureScriptPath = path.join(root, "scripts", "bump-plugin-versions.mjs");
   const cwd = path.join(root, "elsewhere", "deep");
-  const plugins = ["alpha", "omega"].map((name, index) => ({
-    manifest: {
-      name,
-      version: versions[index],
-      description: `${name} description must survive`,
-      keywords: ["one", "two"],
-      interface: { displayName: name.toUpperCase(), capabilities: ["Write"] },
-      "x-test-metadata": { enabled: true },
+  const plugins = [
+    {
+      manifest: {
+        name: "alpha",
+        version: versions[0],
+        description: "alpha codex description must survive",
+        keywords: ["one", "two"],
+        interface: { displayName: "ALPHA", capabilities: ["Write"] },
+        "x-test-metadata": { enabled: true },
+      },
+      manifestPath: path.join(root, "plugins", "alpha", ".codex-plugin", "plugin.json"),
     },
-    manifestPath: path.join(root, "plugins", name, ".codex-plugin", "plugin.json"),
-  }));
+    {
+      manifest: {
+        name: "alpha",
+        version: versions[1],
+        description: "alpha antigravity description must survive",
+      },
+      manifestPath: path.join(root, "plugins", "alpha", "plugin.json"),
+    },
+    {
+      manifest: {
+        name: "omega",
+        version: versions[2],
+        description: "omega codex description must survive",
+        keywords: ["three", "four"],
+        interface: { displayName: "OMEGA", capabilities: ["Interactive"] },
+        "x-test-metadata": { enabled: true },
+      },
+      manifestPath: path.join(root, "plugins", "omega", ".codex-plugin", "plugin.json"),
+    },
+    {
+      manifest: {
+        name: "omega",
+        version: versions[3],
+        description: "omega antigravity description must survive",
+      },
+      manifestPath: path.join(root, "plugins", "omega", "plugin.json"),
+    },
+  ];
 
   await Promise.all([
     mkdir(path.dirname(fixtureScriptPath), { recursive: true }),
     mkdir(cwd, { recursive: true }),
     mkdir(path.join(root, "plugins", "ignored-directory"), { recursive: true }),
+    mkdir(path.join(root, ".agents"), { recursive: true }),
     ...plugins.map(({ manifestPath }) => mkdir(path.dirname(manifestPath), { recursive: true })),
   ]);
   await copyFile(scriptPath, fixtureScriptPath);
   await writeFile(path.join(root, "VERSION"), "1.2.3\n");
+  await writeFile(
+    path.join(root, ".agents", "plugins.json"),
+    `${JSON.stringify({ entries: [{ path: "plugins" }] }, null, 2)}\n`,
+  );
   await Promise.all(
     plugins.map(({ manifest, manifestPath }) =>
       writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`),
@@ -89,8 +123,8 @@ test("--check succeeds when repository plugin versions match VERSION", () => {
   assert.equal(result.status, 0, result.stderr);
 });
 
-test("patch discovers every plugin from any cwd and preserves manifest data", async (testContext) => {
-  // Given: two synchronized plugins and an unrelated directory without a manifest.
+test("patch discovers every dual manifest from any cwd and preserves manifest data", async (testContext) => {
+  // Given: two synchronized dual-platform plugins and an unrelated directory without a manifest.
   const fixture = await createFixture(testContext);
   const originals = structuredClone(fixture.plugins.map(({ manifest }) => manifest));
 
@@ -111,7 +145,7 @@ for (const [argument, expected] of [
   ["major", "2.0.0"],
   ["7.8.9", "7.8.9"],
 ]) {
-  test(`${argument} sets the expected lockstep version`, async (testContext) => {
+  test(`${argument} sets the expected lockstep version across dual manifests`, async (testContext) => {
     // Given: a synchronized plugin repository at version 1.2.3.
     const fixture = await createFixture(testContext);
 
@@ -140,9 +174,9 @@ test("--check does not rewrite synchronized files", async (testContext) => {
   await assertManagedFilesEqual(before);
 });
 
-test("a version change refuses drift without writing any file", async (testContext) => {
-  // Given: one manifest is behind VERSION and all managed files are captured.
-  const fixture = await createFixture(testContext, ["1.2.3", "1.2.2"]);
+test("a version change refuses drift in Codex manifest without writing any file", async (testContext) => {
+  // Given: omega Codex manifest is behind VERSION and all managed files are captured.
+  const fixture = await createFixture(testContext, ["1.2.3", "1.2.3", "1.2.2", "1.2.3"]);
   const before = await snapshotManagedFiles(fixture);
 
   // When: a minor version change is requested.
@@ -150,14 +184,28 @@ test("a version change refuses drift without writing any file", async (testConte
 
   // Then: the drift is located and no managed file is modified.
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /omega.*expected 1\.2\.3, found 1\.2\.2/s);
+  assert.match(result.stderr, /omega.*\.codex-plugin.*expected 1\.2\.3, found 1\.2\.2/s);
+  await assertManagedFilesEqual(before);
+});
+
+test("a version change refuses drift in Antigravity manifest without writing any file", async (testContext) => {
+  // Given: omega Antigravity manifest is behind VERSION and all managed files are captured.
+  const fixture = await createFixture(testContext, ["1.2.3", "1.2.3", "1.2.3", "1.2.2"]);
+  const before = await snapshotManagedFiles(fixture);
+
+  // When: a minor version change is requested.
+  const result = runCli(fixture, "minor");
+
+  // Then: the drift is located and no managed file is modified.
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /omega\/plugin\.json: expected 1\.2\.3, found 1\.2\.2/s);
   await assertManagedFilesEqual(before);
 });
 
 test("a staging failure leaves every managed file unchanged", async (testContext) => {
   // Given: synchronized files and one manifest directory that cannot accept staged files.
   const fixture = await createFixture(testContext);
-  const protectedDirectory = path.dirname(fixture.plugins[1].manifestPath);
+  const protectedDirectory = path.dirname(fixture.plugins[0].manifestPath);
   const before = await snapshotManagedFiles(fixture);
   await chmod(protectedDirectory, 0o555);
 
@@ -191,9 +239,9 @@ for (const invalidVersion of ["1.2", "v1.2.3", "1.2.3-beta", "01.2.3"]) {
 }
 
 test("invalid manifest JSON reports its path without writing", async (testContext) => {
-  // Given: one plugin manifest contains malformed JSON.
+  // Given: one plugin Antigravity manifest contains malformed JSON.
   const fixture = await createFixture(testContext);
-  const brokenPath = fixture.plugins[1].manifestPath;
+  const brokenPath = fixture.plugins[3].manifestPath;
   await writeFile(brokenPath, "{broken\n");
   const before = await snapshotManagedFiles(fixture);
 

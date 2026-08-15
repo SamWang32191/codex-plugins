@@ -6,10 +6,13 @@
 
 ## Repository 模型
 
-- `.agents/plugins/marketplace.json` 是 repo marketplace catalog。
-- 每個 plugin 位於 `plugins/<name>/`，manifest 固定為 `plugins/<name>/.codex-plugin/plugin.json`。
+- `.agents/plugins/marketplace.json` 是 Codex repo marketplace catalog。
+- `.agents/plugins.json` 是 Antigravity workspace plugin 註冊設定檔（宣告 `plugins/` 路徑）。
+- 每個 plugin 位於 `plugins/<name>/`，採雙平台相容架構：
+  - Codex manifest 固定為 `plugins/<name>/.codex-plugin/plugin.json`。
+  - Antigravity manifest 固定為 `plugins/<name>/plugin.json`。
 - `VERSION` 是所有 plugins 的 canonical version。
-- Manifest 的 `version` 是必要衍生值，所有 plugins 採 lockstep versioning。
+- 所有 Manifest 的 `version` 是必要衍生值，所有 plugins 採 lockstep versioning。
 - Local marketplace entry 不保存版本；不要在 `.agents/plugins/marketplace.json` 複製 manifest version。
 
 ## 版本規則
@@ -31,8 +34,8 @@ node scripts/bump-plugin-versions.mjs X.Y.Z
 
 ## 新增或修改 Plugin
 
-- 新增 plugin 時，目錄名稱、manifest `name` 與 marketplace entry `name` 必須一致。
-- 新 manifest 的 `version` 必須等於 `VERSION`，並由 `node scripts/bump-plugin-versions.mjs --check` 驗證。
+- 新增 plugin 時，目錄名稱、雙平台 manifest `name` 與 marketplace entry `name` 必須一致。
+- 雙平台 manifests 的 `version` 必須等於 `VERSION`，並由 `node scripts/bump-plugin-versions.mjs --check` 驗證。
 - Marketplace local path 必須以 `./plugins/<name>` 表示，並保留 `policy.installation`、`policy.authentication` 與 `category`。
 - 新增 plugin 時同步更新 `README.md` 的 Plugins 表格與相關測試；不要把 plugin 名稱硬編碼進升版腳本。
 - 修改 manifest 的非版本欄位時，保留既有 metadata、assets 與使用者未提交的內容。
