@@ -19,6 +19,8 @@
 ├── .agents/
 │   ├── plugins.json
 │   └── plugins/marketplace.json
+├── .claude-plugin/
+│   └── marketplace.json   # `npx skills` discovery 相容層
 ├── .github/workflows/plugin-versions.yml
 ├── plugins/
 │   ├── cmd/
@@ -63,8 +65,9 @@ node scripts/bump-plugin-versions.mjs 1.0.0  # 指定版本
 1. 建立 `plugins/<name>/.codex-plugin/plugin.json`（Codex manifest）與 `plugins/<name>/plugin.json`（Antigravity manifest），以及需要的 `skills/`、`rules/` 等內容。
 2. 雙平台 Manifest 必須包含穩定的 kebab-case `name`、與 `VERSION` 相同的 `version`。
 3. 在 `.agents/plugins/marketplace.json` 新增 local source entry，路徑使用相對於 repository root 的 `./plugins/<name>`。
-4. 更新本 README 的 Plugins 表格。
-5. 執行完整驗證：
+4. 在 `.claude-plugin/marketplace.json` 新增同一個 entry（`source` 為 `./plugins/<name>`、`name` 為 plugin 名稱），讓 `npx skills add <repo> -l` 能列出由 plugin 提供的 skills。
+5. 更新本 README 的 Plugins 表格。
+6. 執行完整驗證：
 
 ```bash
 node --check scripts/bump-plugin-versions.mjs

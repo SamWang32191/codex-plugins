@@ -1,0 +1,13 @@
+{
+  "name": "codex-plugins",
+  "plugins": [
+    {
+      "source": "./plugins/cmd",
+      "name": "cmd"
+    },
+    {
+      "source": "./plugins/dev",
+      "name": "dev"
+    }
+  ]
+}
